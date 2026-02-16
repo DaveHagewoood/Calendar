@@ -436,6 +436,10 @@ function renderTripIcons(container, trips, clipStart, clipEnd) {
         icon.style.position = 'absolute';
         icon.style.left = colToX(centerPos.col + centerPos.dayFraction) + 'px';
         icon.style.top = (rowToY(centerPos.row) + CELL_SIZE / 2) + 'px';
+        icon.addEventListener('click', (e) => {
+            e.stopPropagation();
+            openTripPanel(trip);
+        });
 
         container.appendChild(icon);
     });
@@ -643,6 +647,116 @@ function setupDragScroll(viewport) {
 }
 
 // ============================================================
+// Trip Detail Panel
+// ============================================================
+function createTripPanel() {
+    const container = document.querySelector('.mobile-container');
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'trip-backdrop';
+    backdrop.addEventListener('click', closeTripPanel);
+
+    const panel = document.createElement('div');
+    panel.className = 'trip-panel';
+    panel.innerHTML = `
+        <div class="trip-panel-handle"></div>
+        <div class="trip-panel-header">
+            <div class="trip-panel-route" id="tripPanelRoute"></div>
+            <button class="trip-panel-close" id="tripPanelClose">&times;</button>
+        </div>
+        <div class="trip-panel-time" id="tripPanelTime"></div>
+        <div class="trip-panel-legs" id="tripPanelLegs"></div>
+    `;
+
+    container.appendChild(backdrop);
+    container.appendChild(panel);
+
+    panel.querySelector('#tripPanelClose').addEventListener('click', closeTripPanel);
+
+    CalendarState.tripPanel = panel;
+    CalendarState.tripBackdrop = backdrop;
+}
+
+function formatDuration(minutes) {
+    if (minutes < 60) return `${minutes}min`;
+    const h = Math.floor(minutes / 60);
+    const m = minutes % 60;
+    return m > 0 ? `${h}h ${m}min` : `${h}h`;
+}
+
+function formatTime(timestamp) {
+    const d = new Date(timestamp);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const hours = d.getHours();
+    const mins = d.getMinutes().toString().padStart(2, '0');
+    const ampm = hours >= 12 ? 'PM' : 'AM';
+    const h = hours % 12 || 12;
+    return `${months[d.getMonth()]} ${d.getDate()}, ${h}:${mins} ${ampm}`;
+}
+
+function getLocationColor(name) {
+    const loc = CalendarState.locationMap[name];
+    if (loc) return loc.color;
+    // Fall back to CSS variable values
+    const colors = {
+        home: '#4A7BA7', paris: '#C66B6B', tokyo: '#8B6FB8',
+        beach: '#5AB89E', mountains: '#B8895B', lake: '#6BC6E8'
+    };
+    return colors[name] || '#666';
+}
+
+function getLocationLabel(name) {
+    const loc = CalendarState.locationMap[name];
+    return loc ? loc.label : name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function openTripPanel(trip) {
+    const { tripPanel, tripBackdrop } = CalendarState;
+
+    // Header: from → to with color dots
+    const routeEl = tripPanel.querySelector('#tripPanelRoute');
+    routeEl.innerHTML = `
+        <span class="route-dot" style="background: ${getLocationColor(trip.from)}"></span>
+        ${getLocationLabel(trip.from)}
+        <span class="route-arrow">→</span>
+        <span class="route-dot" style="background: ${getLocationColor(trip.to)}"></span>
+        ${getLocationLabel(trip.to)}
+    `;
+
+    // Time subtitle
+    const timeEl = tripPanel.querySelector('#tripPanelTime');
+    timeEl.textContent = `${formatTime(trip.depart)}  →  ${formatTime(trip.arrive)}`;
+
+    // Build leg timeline
+    const legsEl = tripPanel.querySelector('#tripPanelLegs');
+    legsEl.innerHTML = '';
+
+    trip.legs.forEach(leg => {
+        const mode = transportModes[leg.mode] || { icon: '📍', label: leg.mode };
+        const legEl = document.createElement('div');
+        legEl.className = 'trip-leg';
+        legEl.innerHTML = `
+            <div class="trip-leg-icon">${mode.icon}</div>
+            <div class="trip-leg-info">
+                <div class="trip-leg-note">${leg.note}</div>
+                <div class="trip-leg-duration">${formatDuration(leg.duration)}</div>
+            </div>
+        `;
+        legsEl.appendChild(legEl);
+    });
+
+    // Open
+    tripBackdrop.classList.add('open');
+    tripPanel.classList.add('open');
+}
+
+function closeTripPanel() {
+    CalendarState.tripBackdrop.classList.remove('open');
+    CalendarState.tripPanel.classList.remove('open');
+}
+
+// ============================================================
 // Initialize
 // ============================================================
 function initCalendar() {
@@ -675,6 +789,9 @@ function initCalendar() {
     CalendarState.homeLocation = homeLocation;
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
+
+    // Create trip detail panel
+    createTripPanel();
 
     // Calculate initial range: 13 weeks back from today + 52 weeks forward
     const today = new Date();
