@@ -409,6 +409,48 @@ if (fadeEndTimestamp < calendarEnd.getTime()) {
     }
 }
 
+// Render location labels (one per row per stay)
+const locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
+const numRowsForLabels = Math.ceil(numDays / 7);
+const cellWidthForLabels = 100 / 7;
+const cellHeightForLabels = 100 / numRowsForLabels;
+const minColsForCenteredLabel = 1.5; // Wide enough to center text inside
+
+stays.forEach((stay) => {
+    const loc = locationMap[stay.location];
+    if (!loc) return;
+
+    const startPos = getGridPosition(stay.start);
+    const endPos = getGridPosition(stay.end);
+
+    for (let row = startPos.row; row <= endPos.row; row++) {
+        const isFirstRow = (row === startPos.row);
+        const isLastRow = (row === endPos.row);
+
+        const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
+        const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
+        const colSpan = endCol - startCol;
+
+        const isNarrow = colSpan < minColsForCenteredLabel;
+
+        const label = document.createElement('div');
+        label.className = 'location-label' + (isNarrow ? ' location-label-narrow' : '');
+        label.textContent = loc.label;
+
+        const left = startCol * cellWidthForLabels;
+        const width = colSpan * cellWidthForLabels;
+        const top = row * cellHeightForLabels;
+
+        label.style.position = 'absolute';
+        label.style.left = `${left}%`;
+        label.style.width = `${width}%`;
+        label.style.top = `${top}%`;
+        label.style.height = `${cellHeightForLabels}%`;
+
+        iconContainer.appendChild(label);
+    }
+});
+
 // Render trip icons
 trips.forEach((trip, tripIndex) => {
     const tripCenter = (trip.depart + trip.arrive) / 2;

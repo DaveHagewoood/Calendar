@@ -6,7 +6,8 @@ const CALENDAR_DATA = {
         { "name": "paris", "color": "#E88D8D", "label": "Paris" },
         { "name": "tokyo", "color": "#A78DD8", "label": "Tokyo" },
         { "name": "beach", "color": "#7DD8C0", "label": "Beach House" },
-        { "name": "mountains", "color": "#D8A87D", "label": "Mountains" }
+        { "name": "mountains", "color": "#D8A87D", "label": "Mountains" },
+        { "name": "lake", "color": "#6BC6E8", "label": "Lake House" }
     ],
     "trips": [
         {
@@ -54,6 +55,15 @@ const CALENDAR_DATA = {
             "legs": [
                 { "mode": "car", "duration": 30, "note": "Short drive up the coast" }
             ]
+        },
+        {
+            "depart": "2025-02-28T10:00",
+            "arrive": "2025-02-28T11:00",
+            "from": "mountains",
+            "to": "lake",
+            "legs": [
+                { "mode": "car", "duration": 60, "note": "Drive to lake house" }
+            ]
         }
     ],
     "stays": [
@@ -75,7 +85,12 @@ const CALENDAR_DATA = {
         {
             "location": "mountains",
             "start": "2025-02-27T11:30",
-            "end": "2025-02-28T12:00"
+            "end": "2025-02-28T10:00"
+        },
+        {
+            "location": "lake",
+            "start": "2025-02-28T11:00",
+            "end": "2025-02-28T19:00"
         }
     ],
     "config": {
