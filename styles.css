@@ -144,8 +144,8 @@ body {
 }
 
 /* Location colors */
-.location-home {
-    --fill-color: #4A7BA7;
+.location-san-diego {
+    --fill-color: #E8B84D;
 }
 
 .location-paris {
@@ -170,6 +170,9 @@ body {
 
 .location-undefined {
     --fill-color: #3a3a3a;
+    background-image: url("data:image/svg+xml,%3Csvg width='54' height='54' xmlns='http://www.w3.org/2000/svg'%3E%3Ctext x='27' y='35' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='600' fill='%23ffffff' opacity='0.12'%3E%3F%3C/text%3E%3C/svg%3E") !important;
+    background-size: 53.57px 53.57px !important;
+    background-repeat: repeat !important;
 }
 
 .location-label {

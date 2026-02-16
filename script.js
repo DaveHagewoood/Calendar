@@ -58,7 +58,6 @@ const CalendarState = {
     locations: [],
     locationMap: {},
     fadeHours: 48,
-    homeLocation: 'home',
 
     // DOM refs (set during init)
     canvas: null,
@@ -268,51 +267,57 @@ function renderTrips(container, trips, clipStart, clipEnd) {
     });
 }
 
-// Render undefined periods (before first stay, after last stay)
+// Render undefined periods (before fade-in, after fade-out)
 function renderUndefined(container, clipStart, clipEnd) {
-    const { stays, fadeHours } = CalendarState;
-    if (stays.length === 0) {
-        // No data at all — entire range is undefined
+    const { stays, trips, fadeHours } = CalendarState;
+    const fadeDuration = fadeHours * 60 * 60 * 1000;
+
+    if (stays.length === 0 && trips.length === 0) {
         renderSegment(container, clipStart, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
         return;
     }
 
-    const firstStay = stays[0];
-    const lastStay = stays[stays.length - 1];
+    // Before: undefined ends where fade-in starts (48h before first trip)
+    const firstTrip = trips.length > 0 ? trips[0] : null;
+    const firstStay = stays.length > 0 ? stays[0] : null;
+    const firstEventTime = firstTrip ? firstTrip.depart : firstStay.start;
+    const fadeInStart = firstEventTime - fadeDuration;
 
-    // Before first stay (before fade-in starts)
-    const fadeInStart = firstStay.start - (fadeHours * 60 * 60 * 1000);
     if (clipStart < fadeInStart) {
         renderSegment(container, clipStart, fadeInStart,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
-    // After last stay + fade-out
-    const fadeOutEnd = lastStay.end + (fadeHours * 60 * 60 * 1000);
+    // After: undefined starts where fade-out ends (48h after last stay)
+    const lastStay = stays.length > 0 ? stays[stays.length - 1] : null;
+    const lastTrip = trips.length > 0 ? trips[trips.length - 1] : null;
+    const lastEventTime = lastStay ? lastStay.end : lastTrip.arrive;
+    const fadeOutEnd = lastEventTime + fadeDuration;
+
     if (clipEnd > fadeOutEnd) {
         renderSegment(container, fadeOutEnd, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 }
 
-// Render fade-in gradient before first stay
+// Render fade-in gradient before first trip (into departure location color)
 function renderFadeIn(container, clipStart, clipEnd) {
-    const { stays, fadeHours } = CalendarState;
-    if (stays.length === 0) return;
+    const { trips, fadeHours } = CalendarState;
+    if (trips.length === 0) return;
 
-    const firstStay = stays[0];
-    const fadeInEnd = firstStay.start;
+    const firstTrip = trips[0];
+    const fadeInEnd = firstTrip.depart;
     const fadeInStart = fadeInEnd - (fadeHours * 60 * 60 * 1000);
     const fadeInDuration = fadeInEnd - fadeInStart;
 
-    if (fadeInDuration <= 0 || fadeInEnd <= clipStart || fadeInStart >= clipEnd) return;
+    if (fadeInEnd <= clipStart || fadeInStart >= clipEnd) return;
 
     const clippedStart = Math.max(fadeInStart, clipStart);
     const clippedEnd = Math.min(fadeInEnd, clipEnd);
     const startPos = getGridPosition(clippedStart);
     const endPos = getGridPosition(clippedEnd);
-    const locationClass = `location-${firstStay.location}`;
+    const locationClass = `location-${firstTrip.from}`;
 
     for (let row = startPos.row; row <= endPos.row; row++) {
         const isFirstRow = (row === startPos.row);
@@ -328,7 +333,6 @@ function renderFadeIn(container, clipStart, clipEnd) {
         const seg = createPositionedDiv(`continuous-fill ${locationClass}`,
             left, top, width, CELL_SIZE);
 
-        // Calculate gradient for this row's time range
         const segStartTime = isFirstRow ? clippedStart : weekToTimestamp(row);
         const segEndTime = isLastRow ? clippedEnd : weekToTimestamp(row + 1);
 
@@ -700,7 +704,7 @@ function getLocationColor(name) {
     if (loc) return loc.color;
     // Fall back to CSS variable values
     const colors = {
-        home: '#4A7BA7', paris: '#C66B6B', tokyo: '#8B6FB8',
+        paris: '#C66B6B', tokyo: '#8B6FB8',
         beach: '#5AB89E', mountains: '#B8895B', lake: '#6BC6E8'
     };
     return colors[name] || '#666';
@@ -764,29 +768,14 @@ function initCalendar() {
 
     const config = DataProvider.getConfig();
     const locations = DataProvider.getLocations();
-    const { trips, stays: rawStays } = DataProvider.loadAll();
-
-    // Build full stays array with computed home stay
-    const fadeHours = config.fadeHours;
-    const homeLocation = config.homeLocation;
-    const dataStart = parseTimestamp(config.dataStartDate);
-    let stays;
-    if (trips.length > 0) {
-        stays = [
-            { location: homeLocation, start: dataStart, end: trips[0].depart },
-            ...rawStays
-        ];
-    } else {
-        stays = [...rawStays];
-    }
+    const { trips, stays } = DataProvider.loadAll();
 
     // Populate state
     CalendarState.trips = trips;
     CalendarState.stays = stays;
     CalendarState.locations = locations;
     CalendarState.locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
-    CalendarState.fadeHours = fadeHours;
-    CalendarState.homeLocation = homeLocation;
+    CalendarState.fadeHours = config.fadeHours;
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
 

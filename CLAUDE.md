@@ -20,7 +20,7 @@ Mobile-first continuous timeline (375x812px) showing location stays as color-cod
 - **Positioning**: `rowToY(row)` / `colToX(col)` — absolute pixels, never percentages
 - **Prepend**: uses `transform: translateY()` on chunk containers (preserves CSS animations), compensates `scrollTop`
 - **Z-index**: bg(0) → fills(1) → grid(2) → labels(5) → icons(10)
-- **Home stay**: derived at runtime from `config.dataStartDate` to first trip departure
+- **No "home" concept**: periods without stays/trips are simply undefined (gray with ?)
 
 ## Data Format
 

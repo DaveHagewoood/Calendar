@@ -2,7 +2,7 @@
 // When migrating to a remote database, replace this with a fetch() call
 const CALENDAR_DATA = {
     "locations": [
-        { "name": "home", "color": "#6B9BD1", "label": "Home" },
+        { "name": "san-diego", "color": "#E8B84D", "label": "San Diego" },
         { "name": "paris", "color": "#E88D8D", "label": "Paris" },
         { "name": "tokyo", "color": "#A78DD8", "label": "Tokyo" },
         { "name": "beach", "color": "#7DD8C0", "label": "Beach House" },
@@ -13,10 +13,10 @@ const CALENDAR_DATA = {
         {
             "depart": "2026-01-17T14:30",
             "arrive": "2026-01-18T10:06",
-            "from": "home",
+            "from": "san-diego",
             "to": "paris",
             "legs": [
-                { "mode": "uber", "duration": 45, "note": "To JFK Airport" },
+                { "mode": "uber", "duration": 45, "note": "To SAN Airport" },
                 { "mode": "plane", "duration": 450, "note": "JFK → CDG (7h 30min)" },
                 { "mode": "train", "duration": 60, "note": "RER B to city center" },
                 { "mode": "taxi", "duration": 20, "note": "To apartment" }
@@ -94,10 +94,6 @@ const CALENDAR_DATA = {
         }
     ],
     "config": {
-        "calendarStartDate": "2025-10-01",
-        "weeksToShow": 52,
-        "dataStartDate": "2026-01-01",
-        "fadeHours": 48,
-        "homeLocation": "home"
+        "fadeHours": 48
     }
 };
