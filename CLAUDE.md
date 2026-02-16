@@ -20,6 +20,7 @@ Calendar/
 ├── index.html          # Basic structure, Lucide icon CDN
 ├── styles.css          # Layered architecture with z-index hierarchy
 ├── script.js           # Continuous timeline rendering engine
+├── data.json           # Local datastore for locations, trips, and stays
 ├── .gitignore          # Project exclusions
 └── CLAUDE.md           # This file
 ```
@@ -87,27 +88,44 @@ function renderContinuousSegment(start, end, className, additionalClasses) {
 
 ## Data Structure
 
-```javascript
-const trips = [
-    {
-        depart: makeTimestamp(2025, 0, 17, 14, 30),  // Jan 17, 2:30 PM
-        arrive: makeTimestamp(2025, 0, 18, 9, 0),
-        destination: 'paris'
-    },
-    // ... more trips
-];
+All trip and stay data lives in `data.json`, loaded at runtime via `fetch()`. Dates use ISO 8601 local-time strings (no timezone suffix) for portability and readability.
 
-const stays = [
-    {
-        start: makeTimestamp(2025, 0, 18, 9, 0),
-        end: makeTimestamp(2025, 0, 24, 16, 0),
-        location: 'paris'
-    },
-    // ... more stays
-];
+```json
+{
+    "locations": [
+        { "name": "paris", "color": "#E88D8D", "label": "Paris" }
+    ],
+    "trips": [
+        {
+            "depart": "2025-01-17T14:30",
+            "arrive": "2025-01-18T10:06",
+            "from": "home",
+            "to": "paris",
+            "legs": [
+                { "mode": "uber", "duration": 45, "note": "To JFK Airport" }
+            ]
+        }
+    ],
+    "stays": [
+        {
+            "location": "paris",
+            "start": "2025-01-18T10:06",
+            "end": "2025-02-01T08:00"
+        }
+    ],
+    "config": {
+        "calendarStartDate": "2024-10-01",
+        "weeksToShow": 52,
+        "dataStartDate": "2025-01-01",
+        "fadeHours": 48,
+        "homeLocation": "home"
+    }
+}
 ```
 
-**Important:** JavaScript months are 0-indexed (0=Jan, 1=Feb, 2=March)
+**Important:** The initial "home" stay is not stored in the JSON — it's derived at runtime from the first trip's departure time minus `fadeHours`. This keeps the data clean and avoids redundancy.
+
+**Date format:** Use `YYYY-MM-DDTHH:MM` (no timezone). Parsed via `parseTimestamp()` into local-time millisecond timestamps.
 
 ## Location Colors
 
@@ -174,10 +192,12 @@ const cellSize = 375 / 7;  // Based on mobile width
 ## Code Conventions
 
 ### Timestamps
-Use `makeTimestamp(year, month, day, hour, minute)` for consistency:
-```javascript
-makeTimestamp(2025, 0, 17, 14, 30)  // Jan 17, 2025 at 2:30 PM
+In `data.json`, use ISO 8601 local-time strings:
 ```
+"2025-01-17T14:30"   // Jan 17, 2025 at 2:30 PM
+"2024-10-01"         // Oct 1, 2024 (date-only, for config)
+```
+At runtime, `parseTimestamp()` converts these to millisecond timestamps for all positioning calculations.
 
 ### Class Naming
 - `.location-{name}` - Location-specific color variables
@@ -214,5 +234,5 @@ makeTimestamp(2025, 0, 17, 14, 30)  // Jan 17, 2025 at 2:30 PM
 1. **Never think in discrete days** - Everything is timestamp-based
 2. **Gradients span multiple segments** - Calculate per-segment percentages
 3. **Transparent cells are essential** - Grid is just an overlay
-4. **Month indexing starts at 0** - January = 0, not 1
+4. **Data lives in data.json** - Edit the JSON file, not hardcoded values in script.js
 5. **Z-index matters** - Timeline at 0, grid at 1, icons at 10

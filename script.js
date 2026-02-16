@@ -1,25 +1,18 @@
-// Mock data for locations
-const locations = [
-    { name: 'home', color: '#6B9BD1', label: 'Home' },
-    { name: 'paris', color: '#E88D8D', label: 'Paris' },
-    { name: 'tokyo', color: '#A78DD8', label: 'Tokyo' },
-    { name: 'beach', color: '#7DD8C0', label: 'Beach House' },
-    { name: 'mountains', color: '#D8A87D', label: 'Mountains' }
-];
+// Load data from datastore
+// When migrating to a remote database, swap this to fetch('/api/data').then(r => r.json())
+function loadData() {
+    return CALENDAR_DATA;
+}
 
-// Calendar configuration - show full year with data in the middle
-const calendarStart = new Date(2024, 9, 1); // Oct 1, 2024 (3 months before data)
-const numWeeks = 52;
-const numDays = numWeeks * 7;
-const calendarEnd = new Date(calendarStart);
-calendarEnd.setDate(calendarEnd.getDate() + numDays);
-
-// Data range (where we have actual location data)
-const dataStart = new Date(2025, 0, 1).getTime(); // Jan 1, 2025
-
-// Helper: Create a timestamp from date and time
-function makeTimestamp(year, month, day, hours = 0, minutes = 0) {
-    return new Date(year, month, day, hours, minutes).getTime();
+// Parse ISO date string to timestamp (local time)
+function parseTimestamp(isoString) {
+    const [datePart, timePart] = isoString.split('T');
+    const [year, month, day] = datePart.split('-').map(Number);
+    if (timePart) {
+        const [hours, minutes] = timePart.split(':').map(Number);
+        return new Date(year, month - 1, day, hours, minutes).getTime();
+    }
+    return new Date(year, month - 1, day).getTime();
 }
 
 // Transportation modes
@@ -34,67 +27,40 @@ const transportModes = {
     uber: { icon: '🚙', label: 'Uber' }
 };
 
-// Define trips as continuous time periods with transportation legs
-const trips = [
-    {
-        depart: makeTimestamp(2025, 0, 17, 14, 30),  // Jan 17 (Friday), 2:30 PM
-        arrive: makeTimestamp(2025, 0, 18, 10, 6),   // Jan 18 (Saturday), 10:06 AM
-        from: 'home',
-        to: 'paris',
-        legs: [
-            { mode: 'uber', duration: 45, note: 'To JFK Airport' },
-            { mode: 'plane', duration: 450, note: 'JFK → CDG (7h 30min)' },
-            { mode: 'train', duration: 60, note: 'RER B to city center' },
-            { mode: 'taxi', duration: 20, note: 'To apartment' }
-        ]
-    },
-    {
-        depart: makeTimestamp(2025, 1, 1, 8, 0),     // Feb 1 (Saturday), 8:00 AM
-        arrive: makeTimestamp(2025, 1, 2, 2, 10),    // Feb 2 (Sunday), 2:10 AM
-        from: 'paris',
-        to: 'tokyo',
-        legs: [
-            { mode: 'taxi', duration: 50, note: 'To CDG Airport' },
-            { mode: 'plane', duration: 720, note: 'CDG → HND (12h direct)' },
-            { mode: 'train', duration: 35, note: 'Monorail to city' },
-            { mode: 'taxi', duration: 25, note: 'To hotel' }
-        ]
-    },
-    {
-        depart: makeTimestamp(2025, 1, 11, 16, 0),   // Feb 11 (Tuesday), 4:00 PM
-        arrive: makeTimestamp(2025, 1, 12, 23, 0),   // Feb 12 (Wednesday), 11:00 PM
-        from: 'tokyo',
-        to: 'beach',
-        legs: [
-            { mode: 'train', duration: 90, note: 'To Narita Airport' },
-            { mode: 'plane', duration: 540, note: 'NRT → HNL (9h)' },
-            { mode: 'uber', duration: 35, note: 'To harbor' },
-            { mode: 'boat', duration: 180, note: 'Ferry to island' },
-            { mode: 'car', duration: 15, note: 'To beach house' }
-        ]
-    },
-    {
-        depart: makeTimestamp(2025, 1, 27, 11, 0),   // Feb 27 (Thursday), 11:00 AM
-        arrive: makeTimestamp(2025, 1, 27, 11, 30),  // Feb 27 (Thursday), 11:30 AM (30 min)
-        from: 'beach',
-        to: 'mountains',
-        legs: [
-            { mode: 'car', duration: 30, note: 'Short drive up the coast' }
-        ]
-    }
-];
+// Initialize calendar from loaded data
+function initCalendar() {
+    const data = loadData();
 
-// Define location periods (where you're staying)
-// First stay starts 48 hours before first trip (fade-in period)
-const firstStayStart = trips[0].depart - (48 * 60 * 60 * 1000); // 48 hours before first trip
+    // Parse config
+    const calendarStart = new Date(parseTimestamp(data.config.calendarStartDate));
+    const numWeeks = data.config.weeksToShow;
+    const numDays = numWeeks * 7;
+    const calendarEnd = new Date(calendarStart);
+    calendarEnd.setDate(calendarEnd.getDate() + numDays);
+    const dataStart = parseTimestamp(data.config.dataStartDate);
+    const fadeHours = data.config.fadeHours;
+    const homeLocation = data.config.homeLocation;
 
-const stays = [
-    { location: 'home', start: firstStayStart, end: trips[0].depart },
-    { location: 'paris', start: trips[0].arrive, end: trips[1].depart },
-    { location: 'tokyo', start: trips[1].arrive, end: trips[2].depart },
-    { location: 'beach', start: trips[2].arrive, end: trips[3].depart },
-    { location: 'mountains', start: trips[3].arrive, end: makeTimestamp(2025, 1, 28, 12, 0) } // Feb 28, noon - after this, we don't know
-];
+    // Parse locations
+    const locations = data.locations;
+
+    // Parse trips (convert ISO strings to timestamps)
+    const trips = data.trips.map(t => ({
+        ...t,
+        depart: parseTimestamp(t.depart),
+        arrive: parseTimestamp(t.arrive)
+    }));
+
+    // Build stays array: prepend computed home stay, then parse stored stays
+    const firstStayStart = trips[0].depart - (fadeHours * 60 * 60 * 1000);
+    const stays = [
+        { location: homeLocation, start: firstStayStart, end: trips[0].depart },
+        ...data.stays.map(s => ({
+            ...s,
+            start: parseTimestamp(s.start),
+            end: parseTimestamp(s.end)
+        }))
+    ];
 
 // Helper: Convert timestamp to grid position
 function getGridPosition(timestamp) {
@@ -511,3 +477,7 @@ setTimeout(() => {
 }, 100);
 
 console.log('Calendar prototype loaded with', numDays, 'days from', calendarStart.toDateString(), 'to', calendarEnd.toDateString());
+
+} // end initCalendar
+
+initCalendar();

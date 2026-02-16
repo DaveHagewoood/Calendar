@@ -1,0 +1,86 @@
+{
+    "locations": [
+        { "name": "home", "color": "#6B9BD1", "label": "Home" },
+        { "name": "paris", "color": "#E88D8D", "label": "Paris" },
+        { "name": "tokyo", "color": "#A78DD8", "label": "Tokyo" },
+        { "name": "beach", "color": "#7DD8C0", "label": "Beach House" },
+        { "name": "mountains", "color": "#D8A87D", "label": "Mountains" }
+    ],
+    "trips": [
+        {
+            "depart": "2025-01-17T14:30",
+            "arrive": "2025-01-18T10:06",
+            "from": "home",
+            "to": "paris",
+            "legs": [
+                { "mode": "uber", "duration": 45, "note": "To JFK Airport" },
+                { "mode": "plane", "duration": 450, "note": "JFK → CDG (7h 30min)" },
+                { "mode": "train", "duration": 60, "note": "RER B to city center" },
+                { "mode": "taxi", "duration": 20, "note": "To apartment" }
+            ]
+        },
+        {
+            "depart": "2025-02-01T08:00",
+            "arrive": "2025-02-02T02:10",
+            "from": "paris",
+            "to": "tokyo",
+            "legs": [
+                { "mode": "taxi", "duration": 50, "note": "To CDG Airport" },
+                { "mode": "plane", "duration": 720, "note": "CDG → HND (12h direct)" },
+                { "mode": "train", "duration": 35, "note": "Monorail to city" },
+                { "mode": "taxi", "duration": 25, "note": "To hotel" }
+            ]
+        },
+        {
+            "depart": "2025-02-11T16:00",
+            "arrive": "2025-02-12T23:00",
+            "from": "tokyo",
+            "to": "beach",
+            "legs": [
+                { "mode": "train", "duration": 90, "note": "To Narita Airport" },
+                { "mode": "plane", "duration": 540, "note": "NRT → HNL (9h)" },
+                { "mode": "uber", "duration": 35, "note": "To harbor" },
+                { "mode": "boat", "duration": 180, "note": "Ferry to island" },
+                { "mode": "car", "duration": 15, "note": "To beach house" }
+            ]
+        },
+        {
+            "depart": "2025-02-27T11:00",
+            "arrive": "2025-02-27T11:30",
+            "from": "beach",
+            "to": "mountains",
+            "legs": [
+                { "mode": "car", "duration": 30, "note": "Short drive up the coast" }
+            ]
+        }
+    ],
+    "stays": [
+        {
+            "location": "paris",
+            "start": "2025-01-18T10:06",
+            "end": "2025-02-01T08:00"
+        },
+        {
+            "location": "tokyo",
+            "start": "2025-02-02T02:10",
+            "end": "2025-02-11T16:00"
+        },
+        {
+            "location": "beach",
+            "start": "2025-02-12T23:00",
+            "end": "2025-02-27T11:00"
+        },
+        {
+            "location": "mountains",
+            "start": "2025-02-27T11:30",
+            "end": "2025-02-28T12:00"
+        }
+    ],
+    "config": {
+        "calendarStartDate": "2024-10-01",
+        "weeksToShow": 52,
+        "dataStartDate": "2025-01-01",
+        "fadeHours": 48,
+        "homeLocation": "home"
+    }
+}
