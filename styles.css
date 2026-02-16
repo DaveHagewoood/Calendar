@@ -1,0 +1,210 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: #1a1a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+}
+
+.mobile-container {
+    width: 375px;
+    height: 812px;
+    background: #1a1a1a;
+    border-radius: 20px;
+    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    overflow: hidden;
+    position: relative;
+}
+
+.calendar-viewport {
+    width: 100%;
+    height: 100%;
+    overflow-y: scroll;
+    overflow-x: hidden;
+    position: relative;
+    /* Hide scrollbar */
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+}
+
+.calendar-viewport::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Edge */
+}
+
+.calendar-wrapper {
+    position: relative;
+    width: 100%;
+}
+
+.calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+    padding: 0;
+    background: #333;
+    position: relative;
+}
+
+.day-cell {
+    aspect-ratio: 1;
+    background: transparent;
+    position: relative;
+    overflow: visible;
+    z-index: 1;
+    border-right: 1px solid #333;
+    border-bottom: 1px solid #333;
+}
+
+.day-cell:nth-child(-n+7) {
+    border-top: 1px solid #333;
+}
+
+.day-cell:nth-child(7n+1) {
+    border-left: 1px solid #333;
+}
+
+.segment-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+    background: #2a2a2a;
+}
+
+.icon-container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 10;
+}
+
+.day-number {
+    position: absolute;
+    top: 4px;
+    left: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #fff;
+    z-index: 2;
+    text-shadow: 0 0 3px #000, 0 0 3px #000;
+}
+
+.continuous-fill {
+    position: absolute;
+    background: var(--fill-color, #4A90E2);
+    opacity: 0.85;
+    pointer-events: none;
+    z-index: 0;
+}
+
+@keyframes travel-animation {
+    0% {
+        background-position: 0 0, 0 0;
+    }
+    100% {
+        background-position: 20px 0, 0 0;
+    }
+}
+
+.travel-segment {
+    background-image:
+        url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M 8 5 L 13 10 L 8 15' stroke='%23ffffff' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round' opacity='0.5'/%3E%3C/svg%3E"),
+        linear-gradient(135deg, #06b6d4 0%, #0891b2 100%) !important;
+    background-repeat: repeat, no-repeat !important;
+    background-size: 20px 20px, 100% 100% !important;
+    animation: travel-animation 1.5s linear infinite;
+    opacity: 0.9;
+}
+
+.fading-segment {
+    background: linear-gradient(to right,
+        var(--fill-color) 0%,
+        #3a3a3a 100%) !important;
+    opacity: 0.7;
+}
+
+.travel-icon {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2.5px solid #2a2a2a;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    cursor: pointer;
+    transition: all 0.2s;
+    pointer-events: auto;
+}
+
+.travel-icon svg {
+    width: 18px;
+    height: 18px;
+    stroke: #2a2a2a;
+    stroke-width: 2.5;
+}
+
+.travel-icon:hover {
+    background: #f0f0f0;
+    transform: translate(-50%, -50%) scale(1.15);
+}
+
+/* Location colors */
+.location-home {
+    --fill-color: #4A7BA7;
+}
+
+.location-paris {
+    --fill-color: #C66B6B;
+}
+
+.location-tokyo {
+    --fill-color: #8B6FB8;
+}
+
+.location-beach {
+    --fill-color: #5AB89E;
+}
+
+.location-mountains {
+    --fill-color: #B8895B;
+}
+
+.location-undefined {
+    --fill-color: #3a3a3a;
+}
+
+.undefined-icon {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+    opacity: 0.5;
+    pointer-events: none;
+}
+
+.undefined-icon svg {
+    width: 20px;
+    height: 20px;
+    stroke: #888;
+    stroke-width: 1.5;
+}
