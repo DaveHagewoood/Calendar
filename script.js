@@ -7,9 +7,9 @@ const CHUNK_DAYS = CHUNK_WEEKS * 7;  // Days per chunk
 const BUFFER_PX = 600;               // Extend when this close to edge
 const MAX_CHUNKS = 40;               // Max chunks in DOM before pruning
 
-// Fixed epoch: a known Monday used as absolute row=0 reference
+// Fixed epoch: a known Sunday used as absolute row=0 reference
 // This never changes — all positioning is relative to this
-const EPOCH = new Date(2024, 11, 30); // Mon Dec 30, 2024
+const EPOCH = new Date(2024, 11, 29); // Sun Dec 29, 2024
 EPOCH.setHours(0, 0, 0, 0);
 
 // Transportation modes
@@ -432,7 +432,7 @@ function renderTripIcons(container, trips, clipStart, clipEnd) {
 
         const icon = document.createElement('div');
         icon.className = 'travel-icon';
-        icon.innerHTML = '<i data-lucide="plane"></i>';
+        icon.innerHTML = '<i data-lucide="plus"></i>';
         icon.style.position = 'absolute';
         icon.style.left = colToX(centerPos.col + centerPos.dayFraction) + 'px';
         icon.style.top = (rowToY(centerPos.row) + CELL_SIZE / 2) + 'px';
@@ -531,9 +531,12 @@ function extendBackward(numWeeks) {
     // Shift origin so existing elements stay in place visually
     CalendarState.originY += addedHeight;
 
-    // Update all existing chunk elements' positions
+    // Shift existing chunks via transform (avoids restarting CSS animations)
     CalendarState.chunks.forEach((chunkEl) => {
-        shiftElementPositions(chunkEl, addedHeight);
+        const current = parseFloat(chunkEl.dataset.shiftY || '0');
+        const newShift = current + addedHeight;
+        chunkEl.style.transform = `translateY(${newShift}px)`;
+        chunkEl.dataset.shiftY = newShift;
     });
 
     // Render new chunks
@@ -549,15 +552,6 @@ function extendBackward(numWeeks) {
 
     // Compensate scroll position
     CalendarState.viewport.scrollTop += addedHeight;
-}
-
-// Shift all absolutely positioned children's top by delta pixels
-function shiftElementPositions(container, delta) {
-    const elements = container.querySelectorAll('[style*="top"]');
-    elements.forEach(el => {
-        const currentTop = parseFloat(el.style.top) || 0;
-        el.style.top = (currentTop + delta) + 'px';
-    });
 }
 
 // Prune chunks that are far from viewport
