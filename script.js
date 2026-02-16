@@ -657,20 +657,19 @@ function handleScroll() {
 // ============================================================
 function setupDragScroll(viewport) {
     let isDragging = false;
-    let startY = 0;
-    let startScrollTop = 0;
+    let lastY = 0;
 
     viewport.addEventListener('mousedown', (e) => {
         isDragging = true;
-        startY = e.clientY;
-        startScrollTop = viewport.scrollTop;
+        lastY = e.clientY;
         viewport.style.cursor = 'grabbing';
     });
 
     document.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
-        const deltaY = startY - e.clientY;
-        viewport.scrollTop = startScrollTop + deltaY;
+        const deltaY = lastY - e.clientY;
+        lastY = e.clientY;
+        viewport.scrollTop += deltaY;
     });
 
     document.addEventListener('mouseup', () => {
