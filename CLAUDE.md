@@ -9,59 +9,105 @@ This is **not** a traditional calendar. It's a continuous timeline that wraps ho
 ### Key Architectural Decision
 
 **Think time-based, not day-based.** The fundamental architecture uses:
-- Continuous color bars positioned by absolute timestamps
+- Continuous color bars positioned by absolute pixel coordinates
 - Transparent grid cells overlaid to show day boundaries
 - Z-index layering to separate timeline from grid structure
+- Chunk-based rendering for infinite bidirectional scroll
 
 ## File Structure
 
 ```
 Calendar/
 ├── index.html          # Basic structure, Lucide icon CDN
-├── styles.css          # Layered architecture with z-index hierarchy
-├── script.js           # Continuous timeline rendering engine
-├── data.json           # Local datastore for locations, trips, and stays
+├── styles.css          # Absolute positioning styles, z-index hierarchy
+├── script.js           # Chunk-based infinite scroll rendering engine
+├── data.js             # Local datastore (CALENDAR_DATA constant)
+├── data.json           # Mirror of data.js for reference/migration
 ├── .gitignore          # Project exclusions
 └── CLAUDE.md           # This file
 ```
 
 ## Technical Architecture
 
+### Infinite Scroll & Chunk System
+
+The calendar uses a chunk-based rendering system for infinite bidirectional scroll:
+
+- **CELL_SIZE** = `375 / 7` (~53.57px) — fixed square cell size
+- **EPOCH** = Mon Dec 30, 2024 — absolute row=0 reference that never changes
+- **Chunks** = 4-week (28-day) blocks, rendered on demand
+- Initial load: ~13 weeks back + ~52 weeks forward from today
+- Scroll listener (RAF-throttled, passive) extends range when within 600px of edge
+- Prepend handling: shifts `originY` and `scrollTop` in sync to prevent jumps
+- Distant chunks pruned when count exceeds MAX_CHUNKS (40)
+
+### Key State: CalendarState
+
+```javascript
+CalendarState = {
+    renderedStartWeek,  // Absolute week offset from EPOCH
+    renderedEndWeek,
+    originY,            // Pixel offset: absolute week 0 maps to this Y
+    chunks: Map,        // chunkIndex → DOM element
+    trips, stays,       // Parsed data arrays
+    locationMap,        // name → location object
+    canvas, viewport    // DOM refs
+}
+```
+
+### Pixel Positioning (not percentages)
+
+All elements use absolute pixel positioning via `createPositionedDiv()`:
+
+```javascript
+function rowToY(absoluteRow) {
+    return CalendarState.originY + absoluteRow * CELL_SIZE;
+}
+function colToX(col) {
+    return col * CELL_SIZE;
+}
+```
+
 ### Z-Index Layering
 
 ```
-Layer 0: segment-container   - Continuous color bars
-Layer 1: day-cell            - Transparent grid overlay
-Layer 2: day-number          - Date labels
-Layer 10: icon-container     - Interactive travel icons
+Layer 0: chunk-bg          - Dark gray background rows
+Layer 1: continuous-fill   - Color bars (stays, trips, fades, undefined)
+Layer 2: day-cell          - Transparent grid overlay with borders
+Layer 5: location-label    - Location name text
+Layer 10: travel-icon      - Interactive travel icons
 ```
 
-### Time-Based Positioning
-
-All positioning is calculated from timestamps, not discrete days:
+### Grid Position (absolute from EPOCH)
 
 ```javascript
 function getGridPosition(timestamp) {
-    const daysFromStart = (timestamp - calendarStart) / (24 * 60 * 60 * 1000);
-    const dayIndex = Math.floor(daysFromStart);
-    const dayFraction = daysFromStart - dayIndex;  // Time within day
-    const row = Math.floor(dayIndex / 7);
-    const col = dayIndex % 7;
-    return { row, col, dayIndex, dayFraction };
+    const daysFromEpoch = Math.floor((timestamp - EPOCH) / msPerDay);
+    const row = Math.floor(daysFromEpoch / 7);       // = week offset
+    const col = ((daysFromEpoch % 7) + 7) % 7;       // always 0-6
+    const dayFraction = /* time within the day, 0-1 */;
+    return { row, col, dayIndex: daysFromEpoch, dayFraction };
 }
 ```
 
-### Continuous Segment Rendering
+### Chunk Rendering Pipeline
 
-Segments wrap across multiple rows with percentage-based positioning:
+Each chunk renders layers in z-order:
+1. `chunk-bg` — dark gray row backgrounds
+2. `renderUndefined()` — gray fill for unknown periods
+3. `renderFadeIn()` / `renderFadeOut()` — 48h gradient transitions
+4. `renderStays()` — location color bars
+5. `renderTrips()` — animated travel segments
+6. `renderLabels()` — location name text
+7. `renderDayCells()` — transparent grid with day numbers
+8. `renderTripIcons()` — plane icons on trips
 
-```javascript
-function renderContinuousSegment(start, end, className, additionalClasses) {
-    // Splits segment into row-based pieces
-    // Calculates left/width percentages for each row
-    // Applies gradients across multiple segments for smooth transitions
-}
-```
+### DataProvider
+
+Wraps `CALENDAR_DATA` from `data.js`. Designed to swap to `fetch()` later:
+- `loadAll()` — returns all trips/stays as parsed timestamps
+- `loadRange(start, end)` — returns trips/stays overlapping a time range
+- `getLocations()` / `getConfig()` — static data access
 
 ## Features
 
@@ -69,6 +115,7 @@ function renderContinuousSegment(start, end, className, additionalClasses) {
 - Color-coded background fills for each location
 - Smooth transitions between locations
 - Time-of-day precision (can start/end at specific hours)
+- Labels on each row: centered for wide stays, left-aligned for narrow
 
 ### Travel Periods
 - Cyan gradient background with animated right-facing arrows
@@ -76,19 +123,24 @@ function renderContinuousSegment(start, end, className, additionalClasses) {
 - Hover effect with scale animation
 
 ### Undefined Periods
-- Gray background with question mark icons
-- 48-hour fade-in gradient before first known trip
+- Gray background (#3a3a3a) for unknown periods
+- 48-hour fade-in gradient before first known stay
 - 48-hour fade-out gradient after last known stay
 
 ### Scroll Behavior
-- Vertical scroll only (52 weeks loaded)
+- Infinite bidirectional scroll via chunk system
+- Auto-centers on today's date at startup
 - Mobile-style drag interaction
 - Hidden scrollbar for native app feel
 - 375×812px mobile container
 
+### Today Highlight
+- Translucent white circle behind today's day number
+- Calendar auto-scrolls to center on today
+
 ## Data Structure
 
-All trip and stay data lives in `data.json`, loaded at runtime via `fetch()`. Dates use ISO 8601 local-time strings (no timezone suffix) for portability and readability.
+All trip and stay data lives in `data.js` (and mirrored in `data.json`). Dates use ISO 8601 local-time strings (no timezone suffix).
 
 ```json
 {
@@ -97,8 +149,8 @@ All trip and stay data lives in `data.json`, loaded at runtime via `fetch()`. Da
     ],
     "trips": [
         {
-            "depart": "2025-01-17T14:30",
-            "arrive": "2025-01-18T10:06",
+            "depart": "2026-01-17T14:30",
+            "arrive": "2026-01-18T10:06",
             "from": "home",
             "to": "paris",
             "legs": [
@@ -109,21 +161,21 @@ All trip and stay data lives in `data.json`, loaded at runtime via `fetch()`. Da
     "stays": [
         {
             "location": "paris",
-            "start": "2025-01-18T10:06",
-            "end": "2025-02-01T08:00"
+            "start": "2026-01-18T10:06",
+            "end": "2026-02-01T08:00"
         }
     ],
     "config": {
-        "calendarStartDate": "2024-10-01",
+        "calendarStartDate": "2025-10-01",
         "weeksToShow": 52,
-        "dataStartDate": "2025-01-01",
+        "dataStartDate": "2026-01-01",
         "fadeHours": 48,
         "homeLocation": "home"
     }
 }
 ```
 
-**Important:** The initial "home" stay is not stored in the JSON — it's derived at runtime from the first trip's departure time minus `fadeHours`. This keeps the data clean and avoids redundancy.
+**Important:** The initial "home" stay is derived at runtime from `dataStartDate` to first trip departure.
 
 **Date format:** Use `YYYY-MM-DDTHH:MM` (no timezone). Parsed via `parseTimestamp()` into local-time millisecond timestamps.
 
@@ -137,43 +189,8 @@ Defined as CSS custom properties:
 .location-tokyo { --fill-color: #8B6FB8; }      /* Purple */
 .location-beach { --fill-color: #5AB89E; }      /* Teal */
 .location-mountains { --fill-color: #B8895B; }  /* Brown */
+.location-lake { --fill-color: #6BC6E8; }       /* Cyan */
 .location-undefined { --fill-color: #3a3a3a; }  /* Gray */
-```
-
-## Development History
-
-### Initial Approach (Wrong)
-Started with day-based thinking: each day cell contained its own background color. This broke the continuous timeline concept.
-
-### Architectural Pivot
-Shifted to continuous timeline with transparent overlay:
-1. **Step 1:** Basic color fills with absolute positioning
-2. **Step 2:** Time-of-day precision with fractional days
-3. **Step 3:** Multi-row wrapping with gradient calculations
-
-### Key Learnings
-- Grid cells must be transparent (background: transparent)
-- Segments use absolute positioning with percentage-based coordinates
-- Gradients must be calculated across row boundaries for smooth fades
-- Z-index separation is critical for independent layering
-
-## Visual Effects
-
-### Travel Animation
-```css
-.travel-segment {
-    background-image:
-        url("data:image/svg+xml,..."),  /* Animated arrows */
-        linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
-    animation: travel-animation 1.5s linear infinite;
-}
-```
-
-### Fade Gradients
-48-hour transitions calculated with:
-```javascript
-const gradientStart = Math.max(0, (segmentStartTime - fadeInStart) / fadeInDuration);
-const gradientEnd = Math.min(1, (segmentEndTime - fadeInStart) / fadeInDuration);
 ```
 
 ## Dependencies
@@ -181,50 +198,38 @@ const gradientEnd = Math.min(1, (segmentEndTime - fadeInStart) / fadeInDuration)
 - **Lucide Icons** (CDN): Professional SVG icon library
 - **No build tools required**: Vanilla HTML/CSS/JS
 
-## Configuration
-
-```javascript
-const weeksToShow = 52;
-const calendarStart = new Date(2024, 9, 1);  // Oct 1, 2024
-const cellSize = 375 / 7;  // Based on mobile width
-```
-
 ## Code Conventions
 
 ### Timestamps
-In `data.json`, use ISO 8601 local-time strings:
+In `data.js`/`data.json`, use ISO 8601 local-time strings:
 ```
-"2025-01-17T14:30"   // Jan 17, 2025 at 2:30 PM
-"2024-10-01"         // Oct 1, 2024 (date-only, for config)
+"2026-01-17T14:30"   // Jan 17, 2026 at 2:30 PM
+"2025-10-01"         // Oct 1, 2025 (date-only, for config)
 ```
-At runtime, `parseTimestamp()` converts these to millisecond timestamps for all positioning calculations.
+At runtime, `parseTimestamp()` converts these to millisecond timestamps.
 
 ### Class Naming
 - `.location-{name}` - Location-specific color variables
 - `.travel-segment` - Animated travel background
-- `.fading-segment` - Gradient transition
 - `.travel-icon` - Interactive icon wrapper
+- `.location-label` / `.location-label-narrow` - Stay name labels
+- `.chunk` / `.chunk-bg` - Chunk containers and backgrounds
 
 ### DOM Structure
 ```html
-<div class="calendar-grid">
-    <div class="day-cell">
-        <span class="day-number">1</span>
+<div class="calendar-viewport" id="calendarViewport">
+    <div class="calendar-canvas" id="calendarCanvas">
+        <div class="chunk" data-chunk-index="5">
+            <!-- chunk-bg rows, continuous-fill segments,
+                 day-cells, location-labels, travel-icons -->
+        </div>
     </div>
-    <!-- More cells... -->
-</div>
-<div class="segment-container">
-    <div class="continuous-fill location-paris"></div>
-</div>
-<div class="icon-container">
-    <div class="travel-icon"></div>
 </div>
 ```
 
 ## Future Considerations
 
-- Hot-loading weeks on scroll (currently loads all 52 at once)
-- Data persistence (currently hardcoded sample data)
+- Remote data loading (swap DataProvider.loadAll → fetch)
 - Click handlers for travel icons (expand trip details)
 - Responsive sizing for different screen sizes
 - Month labels positioned absolutely
@@ -232,7 +237,9 @@ At runtime, `parseTimestamp()` converts these to millisecond timestamps for all 
 ## Critical Reminders
 
 1. **Never think in discrete days** - Everything is timestamp-based
-2. **Gradients span multiple segments** - Calculate per-segment percentages
+2. **Pixel positioning only** - No percentages, no CSS grid — use `rowToY()` and `colToX()`
 3. **Transparent cells are essential** - Grid is just an overlay
-4. **Data lives in data.json** - Edit the JSON file, not hardcoded values in script.js
-5. **Z-index matters** - Timeline at 0, grid at 1, icons at 10
+4. **Data lives in data.js** - Edit data.js (and sync data.json), not hardcoded values
+5. **Z-index matters** - Background at 0, fills at 1, grid at 2, labels at 5, icons at 10
+6. **EPOCH never changes** - All positioning is absolute from Dec 30, 2024
+7. **originY shifts on prepend** - Existing elements get repositioned, scrollTop compensated
