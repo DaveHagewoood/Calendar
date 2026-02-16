@@ -1,19 +1,16 @@
-// Load data from datastore
-// When migrating to a remote database, swap this to fetch('/api/data').then(r => r.json())
-function loadData() {
-    return CALENDAR_DATA;
-}
+// ============================================================
+// Constants
+// ============================================================
+const CELL_SIZE = 375 / 7;           // ~53.57px, square cells
+const CHUNK_WEEKS = 4;               // Weeks per chunk
+const CHUNK_DAYS = CHUNK_WEEKS * 7;  // Days per chunk
+const BUFFER_PX = 600;               // Extend when this close to edge
+const MAX_CHUNKS = 40;               // Max chunks in DOM before pruning
 
-// Parse ISO date string to timestamp (local time)
-function parseTimestamp(isoString) {
-    const [datePart, timePart] = isoString.split('T');
-    const [year, month, day] = datePart.split('-').map(Number);
-    if (timePart) {
-        const [hours, minutes] = timePart.split(':').map(Number);
-        return new Date(year, month - 1, day, hours, minutes).getTime();
-    }
-    return new Date(year, month - 1, day).getTime();
-}
+// Fixed epoch: a known Monday used as absolute row=0 reference
+// This never changes — all positioning is relative to this
+const EPOCH = new Date(2024, 11, 30); // Mon Dec 30, 2024
+EPOCH.setHours(0, 0, 0, 0);
 
 // Transportation modes
 const transportModes = {
@@ -27,513 +24,706 @@ const transportModes = {
     uber: { icon: '🚙', label: 'Uber' }
 };
 
-// Initialize calendar from loaded data
-function initCalendar() {
-    const data = loadData();
+// ============================================================
+// Parse helpers
+// ============================================================
+function parseTimestamp(isoString) {
+    const [datePart, timePart] = isoString.split('T');
+    const [year, month, day] = datePart.split('-').map(Number);
+    if (timePart) {
+        const [hours, minutes] = timePart.split(':').map(Number);
+        return new Date(year, month - 1, day, hours, minutes).getTime();
+    }
+    return new Date(year, month - 1, day).getTime();
+}
 
-    // Parse config
-    const calendarStart = new Date(parseTimestamp(data.config.calendarStartDate));
-    const numWeeks = data.config.weeksToShow;
-    const numDays = numWeeks * 7;
-    const calendarEnd = new Date(calendarStart);
-    calendarEnd.setDate(calendarEnd.getDate() + numDays);
-    const dataStart = parseTimestamp(data.config.dataStartDate);
-    const fadeHours = data.config.fadeHours;
-    const homeLocation = data.config.homeLocation;
+// ============================================================
+// Calendar State
+// ============================================================
+const CalendarState = {
+    // Rendered range in absolute week offsets from EPOCH
+    renderedStartWeek: 0,
+    renderedEndWeek: 0,
 
-    // Parse locations
-    const locations = data.locations;
+    // The pixel offset: absolute week 0 maps to this y-pixel in the canvas
+    // When we prepend, we increase this and shift scrollTop
+    originY: 0,
 
-    // Parse trips (convert ISO strings to timestamps)
-    const trips = data.trips.map(t => ({
-        ...t,
-        depart: parseTimestamp(t.depart),
-        arrive: parseTimestamp(t.arrive)
-    }));
+    // Chunks in DOM, keyed by chunkIndex (chunkIndex = Math.floor(weekOffset / CHUNK_WEEKS))
+    chunks: new Map(),
 
-    // Build stays array: prepend computed home stay, then parse stored stays
-    const firstStayStart = trips[0].depart - (fadeHours * 60 * 60 * 1000);
-    const stays = [
-        { location: homeLocation, start: firstStayStart, end: trips[0].depart },
-        ...data.stays.map(s => ({
+    // Parsed data
+    trips: [],
+    stays: [],
+    locations: [],
+    locationMap: {},
+    fadeHours: 48,
+    homeLocation: 'home',
+
+    // DOM refs (set during init)
+    canvas: null,
+    viewport: null,
+};
+
+// ============================================================
+// Data Provider
+// ============================================================
+const DataProvider = {
+    _data: null,
+
+    init() {
+        this._data = CALENDAR_DATA;
+    },
+
+    getLocations() {
+        return this._data.locations;
+    },
+
+    getConfig() {
+        return this._data.config;
+    },
+
+    // Get trips and stays overlapping a time range
+    loadRange(startTime, endTime) {
+        const trips = this._data.trips
+            .map(t => ({
+                ...t,
+                depart: parseTimestamp(t.depart),
+                arrive: parseTimestamp(t.arrive)
+            }))
+            .filter(t => t.arrive > startTime && t.depart < endTime);
+
+        const stays = this._data.stays
+            .map(s => ({
+                ...s,
+                start: parseTimestamp(s.start),
+                end: parseTimestamp(s.end)
+            }))
+            .filter(s => s.end > startTime && s.start < endTime);
+
+        return { trips, stays };
+    },
+
+    // Get ALL trips and stays (for computing derived data like home stay)
+    loadAll() {
+        const trips = this._data.trips.map(t => ({
+            ...t,
+            depart: parseTimestamp(t.depart),
+            arrive: parseTimestamp(t.arrive)
+        }));
+
+        const stays = this._data.stays.map(s => ({
             ...s,
             start: parseTimestamp(s.start),
             end: parseTimestamp(s.end)
-        }))
-    ];
+        }));
 
-// Helper: Convert timestamp to grid position
-function getGridPosition(timestamp) {
-    const msFromStart = timestamp - calendarStart.getTime();
-    const totalMs = calendarEnd.getTime() - calendarStart.getTime();
-
-    // Calculate actual day boundaries to handle DST
-    let dayIndex = 0;
-    let currentTime = calendarStart.getTime();
-
-    while (currentTime < timestamp && dayIndex < numDays) {
-        const dayStart = new Date(calendarStart);
-        dayStart.setDate(dayStart.getDate() + dayIndex);
-        dayStart.setHours(0, 0, 0, 0);
-
-        const dayEnd = new Date(dayStart);
-        dayEnd.setDate(dayEnd.getDate() + 1);
-        dayEnd.setHours(0, 0, 0, 0);
-
-        if (timestamp >= dayStart.getTime() && timestamp < dayEnd.getTime()) {
-            const msInDay = dayEnd.getTime() - dayStart.getTime();
-            const msSinceDayStart = timestamp - dayStart.getTime();
-            const dayFraction = msSinceDayStart / msInDay;
-
-            const row = Math.floor(dayIndex / 7);
-            const col = dayIndex % 7;
-
-            return { row, col, dayIndex, dayFraction };
-        }
-
-        dayIndex++;
-        currentTime = dayEnd.getTime();
+        return { trips, stays };
     }
+};
 
-    // Fallback for timestamps outside range
-    const daysFromStart = msFromStart / (1000 * 60 * 60 * 24);
-    dayIndex = Math.floor(daysFromStart);
-    const dayFraction = daysFromStart - dayIndex;
-    const row = Math.floor(dayIndex / 7);
-    const col = dayIndex % 7;
+// ============================================================
+// Grid Position (absolute, relative to EPOCH)
+// ============================================================
+function getGridPosition(timestamp) {
+    const msPerDay = 24 * 60 * 60 * 1000;
+    const daysFromEpoch = Math.floor((timestamp - EPOCH.getTime()) / msPerDay);
 
-    return { row, col, dayIndex, dayFraction };
+    const dayDate = new Date(EPOCH);
+    dayDate.setDate(dayDate.getDate() + daysFromEpoch);
+    dayDate.setHours(0, 0, 0, 0);
+
+    const nextDay = new Date(dayDate);
+    nextDay.setDate(nextDay.getDate() + 1);
+    nextDay.setHours(0, 0, 0, 0);
+
+    const dayFraction = Math.max(0, Math.min(1,
+        (timestamp - dayDate.getTime()) / (nextDay.getTime() - dayDate.getTime())
+    ));
+
+    const row = Math.floor(daysFromEpoch / 7);
+    const col = ((daysFromEpoch % 7) + 7) % 7; // always 0-6
+
+    return { row, col, dayIndex: daysFromEpoch, dayFraction };
 }
 
-// Helper: Render a continuous segment across the grid (Step 2: with time precision)
-function renderContinuousSegment(start, end, className, additionalClasses = []) {
+// Convert absolute row to pixel Y in the canvas
+function rowToY(absoluteRow) {
+    return CalendarState.originY + absoluteRow * CELL_SIZE;
+}
+
+// Convert absolute col to pixel X
+function colToX(col) {
+    return col * CELL_SIZE;
+}
+
+// Get the date for a given dayIndex from epoch
+function dateFromDayIndex(dayIndex) {
+    const d = new Date(EPOCH);
+    d.setDate(d.getDate() + dayIndex);
+    d.setHours(0, 0, 0, 0);
+    return d;
+}
+
+// Get timestamp for start of a week offset
+function weekToTimestamp(weekOffset) {
+    const d = new Date(EPOCH);
+    d.setDate(d.getDate() + weekOffset * 7);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+}
+
+// ============================================================
+// Rendering helpers
+// ============================================================
+
+// Create an absolutely positioned element
+function createPositionedDiv(className, left, top, width, height) {
+    const el = document.createElement('div');
+    el.className = className;
+    el.style.position = 'absolute';
+    el.style.left = left + 'px';
+    el.style.top = top + 'px';
+    el.style.width = width + 'px';
+    el.style.height = height + 'px';
+    return el;
+}
+
+// Render day cells for a range of day indices
+function renderDayCells(container, startDayIndex, numDays) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayTime = today.getTime();
+
+    for (let i = 0; i < numDays; i++) {
+        const dayIndex = startDayIndex + i;
+        const row = Math.floor(dayIndex / 7);
+        const col = ((dayIndex % 7) + 7) % 7;
+        const date = dateFromDayIndex(dayIndex);
+
+        const cell = createPositionedDiv('day-cell',
+            colToX(col), rowToY(row), CELL_SIZE, CELL_SIZE);
+
+        const dayOfMonth = date.getDate();
+        const monthAbbr = date.toLocaleString('default', { month: 'short' });
+        const dayNumber = document.createElement('div');
+        dayNumber.className = 'day-number';
+
+        if (date.getTime() === todayTime) {
+            dayNumber.classList.add('today');
+        }
+
+        dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
+        cell.appendChild(dayNumber);
+        container.appendChild(cell);
+    }
+}
+
+// Render a continuous segment (stay/trip/undefined) across rows, clipped to a time range
+function renderSegment(container, start, end, className, additionalClasses, clipStart, clipEnd) {
+    const clippedStart = Math.max(start, clipStart);
+    const clippedEnd = Math.min(end, clipEnd);
+    if (clippedStart >= clippedEnd) return [];
+
+    const startPos = getGridPosition(clippedStart);
+    const endPos = getGridPosition(clippedEnd);
     const segments = [];
-    const startPos = getGridPosition(start);
-    const endPos = getGridPosition(end);
 
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7; // Each column is 1/7 of width
-    const cellHeight = 100 / numRows; // Each row is 1/numRows of height
-
-    // Render one segment per row
     for (let row = startPos.row; row <= endPos.row; row++) {
-        const segment = document.createElement('div');
-        segment.className = [className, ...additionalClasses].join(' ');
-
         const isFirstRow = (row === startPos.row);
         const isLastRow = (row === endPos.row);
 
-        // Calculate start position (with fractional day precision on first row)
         const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
-
-        // Calculate end position (with fractional day precision on last row)
         const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
 
-        const left = startCol * cellWidth;
-        const width = (endCol - startCol) * cellWidth;
-        const top = row * cellHeight;
+        const left = colToX(startCol);
+        const width = (endCol - startCol) * CELL_SIZE;
+        const top = rowToY(row);
 
-        segment.style.position = 'absolute';
-        segment.style.left = `${left}%`;
-        segment.style.width = `${width}%`;
-        segment.style.top = `${top}%`;
-        segment.style.height = `${cellHeight}%`;
-
-        segments.push(segment);
+        const seg = createPositionedDiv(
+            [className, ...additionalClasses].join(' '),
+            left, top, width, CELL_SIZE
+        );
+        segments.push(seg);
+        container.appendChild(seg);
     }
-
     return segments;
 }
 
-// Render calendar grid (day cells with numbers only)
-const calendarGrid = document.getElementById('calendarGrid');
-
-const today = new Date();
-today.setHours(0, 0, 0, 0);
-
-for (let i = 0; i < numDays; i++) {
-    const date = new Date(calendarStart);
-    date.setDate(date.getDate() + i);
-
-    const dayCell = document.createElement('div');
-    dayCell.className = 'day-cell';
-
-    // Render day number
-    const dayOfMonth = date.getDate();
-    const monthAbbr = date.toLocaleString('default', { month: 'short' });
-    const dayNumber = document.createElement('div');
-    dayNumber.className = 'day-number';
-
-    // Check if this is today
-    const cellDate = new Date(date);
-    cellDate.setHours(0, 0, 0, 0);
-    if (cellDate.getTime() === today.getTime()) {
-        dayNumber.classList.add('today');
-    }
-
-    dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
-
-    dayCell.appendChild(dayNumber);
-    calendarGrid.appendChild(dayCell);
+// Render stay segments for a time range
+function renderStays(container, stays, clipStart, clipEnd) {
+    stays.forEach(stay => {
+        if (stay.end <= clipStart || stay.start >= clipEnd) return;
+        renderSegment(container, stay.start, stay.end,
+            'continuous-fill', [`location-${stay.location}`], clipStart, clipEnd);
+    });
 }
 
-// Create a container for continuous segments
-const segmentContainer = document.createElement('div');
-segmentContainer.className = 'segment-container';
-calendarGrid.appendChild(segmentContainer);
+// Render trip segments for a time range
+function renderTrips(container, trips, clipStart, clipEnd) {
+    trips.forEach(trip => {
+        if (trip.arrive <= clipStart || trip.depart >= clipEnd) return;
+        renderSegment(container, trip.depart, trip.arrive,
+            'continuous-fill', ['travel-segment'], clipStart, clipEnd);
+    });
+}
 
-// Create a separate container for icons (needs to be on top)
-const iconContainer = document.createElement('div');
-iconContainer.className = 'icon-container';
-calendarGrid.appendChild(iconContainer);
+// Render undefined periods (before first stay, after last stay)
+function renderUndefined(container, clipStart, clipEnd) {
+    const { stays, fadeHours } = CalendarState;
+    if (stays.length === 0) {
+        // No data at all — entire range is undefined
+        renderSegment(container, clipStart, clipEnd,
+            'continuous-fill', ['location-undefined'], clipStart, clipEnd);
+        return;
+    }
 
-// Render undefined period before data starts (before fade-in)
-if (calendarStart.getTime() < firstStayStart) {
-    const segments = renderContinuousSegment(
-        calendarStart.getTime(),
-        firstStayStart,
-        'continuous-fill',
-        ['location-undefined']
-    );
-    segments.forEach(seg => segmentContainer.appendChild(seg));
+    const firstStay = stays[0];
+    const lastStay = stays[stays.length - 1];
 
-    // Add question mark icons for pre-data undefined period
-    const preStartPos = getGridPosition(calendarStart.getTime());
-    const preEndPos = getGridPosition(firstStayStart);
+    // Before first stay (before fade-in starts)
+    const fadeInStart = firstStay.start - (fadeHours * 60 * 60 * 1000);
+    if (clipStart < fadeInStart) {
+        renderSegment(container, clipStart, fadeInStart,
+            'continuous-fill', ['location-undefined'], clipStart, clipEnd);
+    }
 
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7;
-    const cellHeight = 100 / numRows;
-
-    for (let dayIdx = preStartPos.dayIndex; dayIdx < preEndPos.dayIndex; dayIdx++) {
-        const row = Math.floor(dayIdx / 7);
-        const col = dayIdx % 7;
-
-        const questionMark = document.createElement('div');
-        questionMark.className = 'undefined-icon';
-        questionMark.innerHTML = '<i data-lucide="help-circle"></i>';
-        questionMark.style.position = 'absolute';
-        questionMark.style.left = `${(col + 0.5) * cellWidth}%`;
-        questionMark.style.top = `${(row + 0.5) * cellHeight}%`;
-        questionMark.style.transform = 'translate(-50%, -50%)';
-
-        iconContainer.appendChild(questionMark);
+    // After last stay + fade-out
+    const fadeOutEnd = lastStay.end + (fadeHours * 60 * 60 * 1000);
+    if (clipEnd > fadeOutEnd) {
+        renderSegment(container, fadeOutEnd, clipEnd,
+            'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 }
 
-// Render fade-in period before first stay (48 hours before first trip)
-const fadeInStart = firstStayStart;
-const fadeInEnd = trips[0].depart;
-const fadeInDuration = fadeInEnd - fadeInStart;
+// Render fade-in gradient before first stay
+function renderFadeIn(container, clipStart, clipEnd) {
+    const { stays, fadeHours } = CalendarState;
+    if (stays.length === 0) return;
 
-if (fadeInDuration > 0) {
-    const startPos = getGridPosition(fadeInStart);
-    const endPos = getGridPosition(fadeInEnd);
+    const firstStay = stays[0];
+    const fadeInEnd = firstStay.start;
+    const fadeInStart = fadeInEnd - (fadeHours * 60 * 60 * 1000);
+    const fadeInDuration = fadeInEnd - fadeInStart;
 
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7;
-    const cellHeight = 100 / numRows;
+    if (fadeInDuration <= 0 || fadeInEnd <= clipStart || fadeInStart >= clipEnd) return;
 
-    const firstLocation = stays[0].location;
-    const locationClass = `location-${firstLocation}`;
+    const clippedStart = Math.max(fadeInStart, clipStart);
+    const clippedEnd = Math.min(fadeInEnd, clipEnd);
+    const startPos = getGridPosition(clippedStart);
+    const endPos = getGridPosition(clippedEnd);
+    const locationClass = `location-${firstStay.location}`;
 
-    // Render one segment per row with calculated gradient (gray to home color)
     for (let row = startPos.row; row <= endPos.row; row++) {
-        const segment = document.createElement('div');
-        segment.className = `continuous-fill ${locationClass}`;
-
         const isFirstRow = (row === startPos.row);
         const isLastRow = (row === endPos.row);
 
         const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
         const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
 
-        const left = startCol * cellWidth;
-        const width = (endCol - startCol) * cellWidth;
-        const top = row * cellHeight;
+        const left = colToX(startCol);
+        const width = (endCol - startCol) * CELL_SIZE;
+        const top = rowToY(row);
 
-        segment.style.position = 'absolute';
-        segment.style.left = `${left}%`;
-        segment.style.width = `${width}%`;
-        segment.style.top = `${top}%`;
-        segment.style.height = `${cellHeight}%`;
+        const seg = createPositionedDiv(`continuous-fill ${locationClass}`,
+            left, top, width, CELL_SIZE);
 
-        // Calculate the time range this segment covers
-        const segmentStartTime = isFirstRow ? fadeInStart : (() => {
-            const rowStart = new Date(calendarStart);
-            rowStart.setDate(rowStart.getDate() + row * 7);
-            rowStart.setHours(0, 0, 0, 0);
-            return rowStart.getTime();
-        })();
+        // Calculate gradient for this row's time range
+        const segStartTime = isFirstRow ? clippedStart : weekToTimestamp(row);
+        const segEndTime = isLastRow ? clippedEnd : weekToTimestamp(row + 1);
 
-        const segmentEndTime = isLastRow ? fadeInEnd : (() => {
-            const rowEnd = new Date(calendarStart);
-            rowEnd.setDate(rowEnd.getDate() + (row + 1) * 7);
-            rowEnd.setHours(0, 0, 0, 0);
-            return rowEnd.getTime();
-        })();
+        const gradStart = Math.max(0, (segStartTime - fadeInStart) / fadeInDuration) * 100;
+        const gradEnd = Math.min(1, (segEndTime - fadeInStart) / fadeInDuration) * 100;
 
-        // Calculate gradient positions (0 = start of fade, 1 = end of fade)
-        const gradientStart = Math.max(0, (segmentStartTime - fadeInStart) / fadeInDuration);
-        const gradientEnd = Math.min(1, (segmentEndTime - fadeInStart) / fadeInDuration);
-
-        // Create gradient with correct start/end positions (gray to home color)
-        const gradientStartPercent = gradientStart * 100;
-        const gradientEndPercent = gradientEnd * 100;
-
-        segment.style.background = `linear-gradient(to right,
-            #3a3a3a ${gradientStartPercent}%,
-            var(--fill-color) ${gradientEndPercent}%)`;
-        segment.style.opacity = '0.85';
-
-        segmentContainer.appendChild(segment);
+        seg.style.background = `linear-gradient(to right, #3a3a3a ${gradStart}%, var(--fill-color) ${gradEnd}%)`;
+        seg.style.opacity = '0.85';
+        container.appendChild(seg);
     }
 }
 
-// Render stay segments (skip first one since it's rendered as fade-in)
-stays.forEach((stay, index) => {
-    if (index === 0) return; // Skip first stay, it's the fade-in period
+// Render fade-out gradient after last stay
+function renderFadeOut(container, clipStart, clipEnd) {
+    const { stays, fadeHours } = CalendarState;
+    if (stays.length === 0) return;
 
-    const segments = renderContinuousSegment(
-        stay.start,
-        stay.end,
-        'continuous-fill',
-        [`location-${stay.location}`]
-    );
-    segments.forEach(seg => segmentContainer.appendChild(seg));
-});
+    const lastStay = stays[stays.length - 1];
+    const fadeOutStart = lastStay.end;
+    const fadeOutEnd = fadeOutStart + (fadeHours * 60 * 60 * 1000);
+    const fadeOutDuration = fadeOutEnd - fadeOutStart;
 
-// Render travel segments
-trips.forEach((trip, tripIndex) => {
-    const segments = renderContinuousSegment(
-        trip.depart,
-        trip.arrive,
-        'continuous-fill',
-        ['travel-segment']
-    );
-    segments.forEach(seg => segmentContainer.appendChild(seg));
-});
+    if (fadeOutDuration <= 0 || fadeOutEnd <= clipStart || fadeOutStart >= clipEnd) return;
 
-// Render fade period after last stay with continuous gradient
-const lastStay = stays[stays.length - 1];
-const fadeEnd = new Date(lastStay.end);
-fadeEnd.setTime(fadeEnd.getTime() + 48 * 60 * 60 * 1000); // 48 hours
-const fadeEndTimestamp = Math.min(fadeEnd.getTime(), calendarEnd.getTime());
-
-if (fadeEndTimestamp > lastStay.end) {
-    const fadeDuration = fadeEndTimestamp - lastStay.end;
-    const startPos = getGridPosition(lastStay.end);
-    const endPos = getGridPosition(fadeEndTimestamp);
-
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7;
-    const cellHeight = 100 / numRows;
-
+    const clippedStart = Math.max(fadeOutStart, clipStart);
+    const clippedEnd = Math.min(fadeOutEnd, clipEnd);
+    const startPos = getGridPosition(clippedStart);
+    const endPos = getGridPosition(clippedEnd);
     const locationClass = `location-${lastStay.location}`;
 
-    // Render one segment per row with calculated gradient
     for (let row = startPos.row; row <= endPos.row; row++) {
-        const segment = document.createElement('div');
-        segment.className = `continuous-fill ${locationClass}`;
-
         const isFirstRow = (row === startPos.row);
         const isLastRow = (row === endPos.row);
 
         const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
         const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
 
-        const left = startCol * cellWidth;
-        const width = (endCol - startCol) * cellWidth;
-        const top = row * cellHeight;
+        const left = colToX(startCol);
+        const width = (endCol - startCol) * CELL_SIZE;
+        const top = rowToY(row);
 
-        segment.style.position = 'absolute';
-        segment.style.left = `${left}%`;
-        segment.style.width = `${width}%`;
-        segment.style.top = `${top}%`;
-        segment.style.height = `${cellHeight}%`;
+        const seg = createPositionedDiv(`continuous-fill ${locationClass}`,
+            left, top, width, CELL_SIZE);
 
-        // Calculate the time range this segment covers
-        const segmentStartTime = isFirstRow ? lastStay.end : (() => {
-            const rowStart = new Date(calendarStart);
-            rowStart.setDate(rowStart.getDate() + row * 7);
-            rowStart.setHours(0, 0, 0, 0);
-            return rowStart.getTime();
-        })();
+        const segStartTime = isFirstRow ? clippedStart : weekToTimestamp(row);
+        const segEndTime = isLastRow ? clippedEnd : weekToTimestamp(row + 1);
 
-        const segmentEndTime = isLastRow ? fadeEndTimestamp : (() => {
-            const rowEnd = new Date(calendarStart);
-            rowEnd.setDate(rowEnd.getDate() + (row + 1) * 7);
-            rowEnd.setHours(0, 0, 0, 0);
-            return rowEnd.getTime();
-        })();
+        const gradStart = Math.max(0, (segStartTime - fadeOutStart) / fadeOutDuration) * 100;
+        const gradEnd = Math.min(1, (segEndTime - fadeOutStart) / fadeOutDuration) * 100;
 
-        // Calculate gradient positions (0 = start of fade, 1 = end of fade)
-        const gradientStart = Math.max(0, (segmentStartTime - lastStay.end) / fadeDuration);
-        const gradientEnd = Math.min(1, (segmentEndTime - lastStay.end) / fadeDuration);
-
-        // Create gradient with correct start/end positions
-        const gradientStartPercent = gradientStart * 100;
-        const gradientEndPercent = gradientEnd * 100;
-
-        segment.style.background = `linear-gradient(to right,
-            var(--fill-color) ${gradientStartPercent}%,
-            #3a3a3a ${gradientEndPercent}%)`;
-        segment.style.opacity = '0.85';
-
-        segmentContainer.appendChild(segment);
+        seg.style.background = `linear-gradient(to right, var(--fill-color) ${gradStart}%, #3a3a3a ${gradEnd}%)`;
+        seg.style.opacity = '0.85';
+        container.appendChild(seg);
     }
 }
 
-// Render undefined period after fade
-if (fadeEndTimestamp < calendarEnd.getTime()) {
-    const segments = renderContinuousSegment(
-        fadeEndTimestamp,
-        calendarEnd.getTime(),
-        'continuous-fill',
-        ['location-undefined']
-    );
-    segments.forEach(seg => {
-        segmentContainer.appendChild(seg);
+// Render location labels for a time range
+function renderLabels(container, stays, clipStart, clipEnd) {
+    const { locationMap } = CalendarState;
+    const minColsForCentered = 1.5;
+
+    stays.forEach(stay => {
+        if (stay.end <= clipStart || stay.start >= clipEnd) return;
+        const loc = locationMap[stay.location];
+        if (!loc) return;
+
+        const clippedStart = Math.max(stay.start, clipStart);
+        const clippedEnd = Math.min(stay.end, clipEnd);
+        const startPos = getGridPosition(clippedStart);
+        const endPos = getGridPosition(clippedEnd);
+
+        for (let row = startPos.row; row <= endPos.row; row++) {
+            const isFirstRow = (row === startPos.row);
+            const isLastRow = (row === endPos.row);
+
+            const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
+            const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
+            const colSpan = endCol - startCol;
+
+            const isNarrow = colSpan < minColsForCentered;
+
+            const label = createPositionedDiv(
+                'location-label' + (isNarrow ? ' location-label-narrow' : ''),
+                colToX(startCol), rowToY(row), colSpan * CELL_SIZE, CELL_SIZE
+            );
+            label.textContent = loc.label;
+            container.appendChild(label);
+        }
+    });
+}
+
+// Render trip icons for a time range
+function renderTripIcons(container, trips, clipStart, clipEnd) {
+    trips.forEach(trip => {
+        if (trip.arrive <= clipStart || trip.depart >= clipEnd) return;
+
+        const tripCenter = (trip.depart + trip.arrive) / 2;
+        if (tripCenter < clipStart || tripCenter >= clipEnd) return;
+
+        const centerPos = getGridPosition(tripCenter);
+
+        const icon = document.createElement('div');
+        icon.className = 'travel-icon';
+        icon.innerHTML = '<i data-lucide="plane"></i>';
+        icon.style.position = 'absolute';
+        icon.style.left = colToX(centerPos.col + centerPos.dayFraction) + 'px';
+        icon.style.top = (rowToY(centerPos.row) + CELL_SIZE / 2) + 'px';
+
+        container.appendChild(icon);
+    });
+}
+
+// ============================================================
+// Chunk rendering
+// ============================================================
+function getChunkIndex(weekOffset) {
+    return Math.floor(weekOffset / CHUNK_WEEKS);
+}
+
+function renderChunk(chunkIndex) {
+    if (CalendarState.chunks.has(chunkIndex)) return; // Already rendered
+
+    const startWeek = chunkIndex * CHUNK_WEEKS;
+    const startDayIndex = startWeek * 7;
+    const chunkStartTime = weekToTimestamp(startWeek);
+    const chunkEndTime = weekToTimestamp(startWeek + CHUNK_WEEKS);
+
+    const fragment = document.createDocumentFragment();
+
+    // Background fill for the chunk area (dark gray base)
+    const bgStartRow = startWeek;
+    for (let w = 0; w < CHUNK_WEEKS; w++) {
+        const row = startWeek + w;
+        const bg = createPositionedDiv('chunk-bg', 0, rowToY(row), 375, CELL_SIZE);
+        fragment.appendChild(bg);
+    }
+
+    // Render layers in z-order: undefined → fades → stays → trips → labels → day cells → icons
+    renderUndefined(fragment, chunkStartTime, chunkEndTime);
+    renderFadeIn(fragment, chunkStartTime, chunkEndTime);
+    renderFadeOut(fragment, chunkStartTime, chunkEndTime);
+    renderStays(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
+    renderTrips(fragment, CalendarState.trips, chunkStartTime, chunkEndTime);
+    renderLabels(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
+    renderDayCells(fragment, startDayIndex, CHUNK_DAYS);
+    renderTripIcons(fragment, CalendarState.trips, chunkStartTime, chunkEndTime);
+
+    // Wrap in a container div for easy removal
+    const chunkEl = document.createElement('div');
+    chunkEl.className = 'chunk';
+    chunkEl.dataset.chunkIndex = chunkIndex;
+    chunkEl.appendChild(fragment);
+
+    CalendarState.canvas.appendChild(chunkEl);
+    CalendarState.chunks.set(chunkIndex, chunkEl);
+
+    // Initialize lucide icons for this chunk only
+    lucide.createIcons({ nameAttr: 'data-lucide', nodes: chunkEl.querySelectorAll('[data-lucide]') });
+}
+
+function removeChunk(chunkIndex) {
+    const el = CalendarState.chunks.get(chunkIndex);
+    if (el) {
+        el.remove();
+        CalendarState.chunks.delete(chunkIndex);
+    }
+}
+
+// ============================================================
+// Canvas size management
+// ============================================================
+function updateCanvasSize() {
+    const totalRows = CalendarState.renderedEndWeek - CalendarState.renderedStartWeek;
+    const height = rowToY(CalendarState.renderedEndWeek) - rowToY(CalendarState.renderedStartWeek);
+    // The canvas top corresponds to renderedStartWeek
+    // We use originY to map absolute rows to canvas pixels
+    CalendarState.canvas.style.height = (rowToY(CalendarState.renderedEndWeek)) + 'px';
+}
+
+// ============================================================
+// Scroll extension
+// ============================================================
+function extendForward(numWeeks) {
+    const newEndWeek = CalendarState.renderedEndWeek + numWeeks;
+    const startChunk = getChunkIndex(CalendarState.renderedEndWeek);
+    const endChunk = getChunkIndex(newEndWeek - 1);
+
+    for (let ci = startChunk; ci <= endChunk; ci++) {
+        renderChunk(ci);
+    }
+
+    CalendarState.renderedEndWeek = newEndWeek;
+    updateCanvasSize();
+}
+
+function extendBackward(numWeeks) {
+    const newStartWeek = CalendarState.renderedStartWeek - numWeeks;
+    const addedHeight = numWeeks * CELL_SIZE;
+
+    // Shift origin so existing elements stay in place visually
+    CalendarState.originY += addedHeight;
+
+    // Update all existing chunk elements' positions
+    CalendarState.chunks.forEach((chunkEl) => {
+        shiftElementPositions(chunkEl, addedHeight);
     });
 
-    // Add question mark icons for undefined period (one per day)
-    const undefStartPos = getGridPosition(fadeEndTimestamp);
-    const undefEndPos = getGridPosition(calendarEnd.getTime());
+    // Render new chunks
+    const startChunk = getChunkIndex(newStartWeek);
+    const endChunk = getChunkIndex(CalendarState.renderedStartWeek - 1);
 
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7;
-    const cellHeight = 100 / numRows;
+    for (let ci = startChunk; ci <= endChunk; ci++) {
+        renderChunk(ci);
+    }
 
-    for (let dayIdx = undefStartPos.dayIndex; dayIdx <= undefEndPos.dayIndex; dayIdx++) {
-        const row = Math.floor(dayIdx / 7);
-        const col = dayIdx % 7;
+    CalendarState.renderedStartWeek = newStartWeek;
+    updateCanvasSize();
 
-        const questionMark = document.createElement('div');
-        questionMark.className = 'undefined-icon';
-        questionMark.innerHTML = '<i data-lucide="help-circle"></i>';
-        questionMark.style.position = 'absolute';
-        questionMark.style.left = `${(col + 0.5) * cellWidth}%`;
-        questionMark.style.top = `${(row + 0.5) * cellHeight}%`;
-        questionMark.style.transform = 'translate(-50%, -50%)';
+    // Compensate scroll position
+    CalendarState.viewport.scrollTop += addedHeight;
+}
 
-        iconContainer.appendChild(questionMark);
+// Shift all absolutely positioned children's top by delta pixels
+function shiftElementPositions(container, delta) {
+    const elements = container.querySelectorAll('[style*="top"]');
+    elements.forEach(el => {
+        const currentTop = parseFloat(el.style.top) || 0;
+        el.style.top = (currentTop + delta) + 'px';
+    });
+}
+
+// Prune chunks that are far from viewport
+function pruneDistantChunks() {
+    if (CalendarState.chunks.size <= MAX_CHUNKS) return;
+
+    const scrollTop = CalendarState.viewport.scrollTop;
+    const viewportHeight = CalendarState.viewport.clientHeight;
+    const viewCenter = scrollTop + viewportHeight / 2;
+
+    // Find which row is at center
+    const centerRow = Math.floor(viewCenter / CELL_SIZE);
+
+    // Sort chunks by distance from center
+    const sorted = [...CalendarState.chunks.entries()].sort((a, b) => {
+        const aCenterRow = a[0] * CHUNK_WEEKS + CHUNK_WEEKS / 2;
+        const bCenterRow = b[0] * CHUNK_WEEKS + CHUNK_WEEKS / 2;
+        return Math.abs(bCenterRow - centerRow) - Math.abs(aCenterRow - centerRow);
+    });
+
+    // Remove the most distant chunks
+    while (sorted.length > MAX_CHUNKS) {
+        const [chunkIndex] = sorted.shift();
+        removeChunk(chunkIndex);
+    }
+
+    // Update rendered range
+    const remaining = [...CalendarState.chunks.keys()].sort((a, b) => a - b);
+    if (remaining.length > 0) {
+        CalendarState.renderedStartWeek = remaining[0] * CHUNK_WEEKS;
+        CalendarState.renderedEndWeek = (remaining[remaining.length - 1] + 1) * CHUNK_WEEKS;
     }
 }
 
-// Render location labels (one per row per stay)
-const locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
-const numRowsForLabels = Math.ceil(numDays / 7);
-const cellWidthForLabels = 100 / 7;
-const cellHeightForLabels = 100 / numRowsForLabels;
-const minColsForCenteredLabel = 1.5; // Wide enough to center text inside
+// ============================================================
+// Scroll handler
+// ============================================================
+let scrollRAF = null;
 
-stays.forEach((stay) => {
-    const loc = locationMap[stay.location];
-    if (!loc) return;
+function handleScroll() {
+    const { viewport } = CalendarState;
+    const scrollTop = viewport.scrollTop;
+    const viewportHeight = viewport.clientHeight;
+    const canvasHeight = parseFloat(CalendarState.canvas.style.height) || 0;
 
-    const startPos = getGridPosition(stay.start);
-    const endPos = getGridPosition(stay.end);
-
-    for (let row = startPos.row; row <= endPos.row; row++) {
-        const isFirstRow = (row === startPos.row);
-        const isLastRow = (row === endPos.row);
-
-        const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
-        const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
-        const colSpan = endCol - startCol;
-
-        const isNarrow = colSpan < minColsForCenteredLabel;
-
-        const label = document.createElement('div');
-        label.className = 'location-label' + (isNarrow ? ' location-label-narrow' : '');
-        label.textContent = loc.label;
-
-        const left = startCol * cellWidthForLabels;
-        const width = colSpan * cellWidthForLabels;
-        const top = row * cellHeightForLabels;
-
-        label.style.position = 'absolute';
-        label.style.left = `${left}%`;
-        label.style.width = `${width}%`;
-        label.style.top = `${top}%`;
-        label.style.height = `${cellHeightForLabels}%`;
-
-        iconContainer.appendChild(label);
+    // Extend forward
+    if (scrollTop + viewportHeight > canvasHeight - BUFFER_PX) {
+        extendForward(CHUNK_WEEKS);
     }
-});
 
-// Render trip icons
-trips.forEach((trip, tripIndex) => {
-    const tripCenter = (trip.depart + trip.arrive) / 2;
-    const centerPos = getGridPosition(tripCenter);
+    // Extend backward
+    if (scrollTop < BUFFER_PX) {
+        extendBackward(CHUNK_WEEKS);
+    }
 
-    const icon = document.createElement('div');
-    icon.className = 'travel-icon';
-    icon.innerHTML = '<i data-lucide="plus"></i>';
+    // Prune if too many chunks
+    pruneDistantChunks();
+}
 
-    const numRows = Math.ceil(numDays / 7);
-    const cellWidth = 100 / 7;
-    const cellHeight = 100 / numRows;
+// ============================================================
+// Drag scroll (mobile-style)
+// ============================================================
+function setupDragScroll(viewport) {
+    let isDragging = false;
+    let startY = 0;
+    let startScrollTop = 0;
 
-    // Position at exact time within the day
-    const left = (centerPos.col + centerPos.dayFraction) * cellWidth;
-    const top = centerPos.row * cellHeight + cellHeight / 2;
+    viewport.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        startY = e.clientY;
+        startScrollTop = viewport.scrollTop;
+        viewport.style.cursor = 'grabbing';
+    });
 
-    icon.style.position = 'absolute';
-    icon.style.left = `${left}%`;
-    icon.style.top = `${top}%`;
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const deltaY = startY - e.clientY;
+        viewport.scrollTop = startScrollTop + deltaY;
+    });
 
-    iconContainer.appendChild(icon);
-});
+    document.addEventListener('mouseup', () => {
+        isDragging = false;
+        viewport.style.cursor = 'default';
+    });
 
-// Initialize Lucide icons
-lucide.createIcons();
+    viewport.addEventListener('selectstart', (e) => {
+        if (isDragging) e.preventDefault();
+    });
+}
 
-// Vertical drag scroll functionality (mobile-style)
-const viewport = document.querySelector('.calendar-viewport');
+// ============================================================
+// Initialize
+// ============================================================
+function initCalendar() {
+    DataProvider.init();
 
-let isDragging = false;
-let startY = 0;
-let startScrollTop = 0;
+    const config = DataProvider.getConfig();
+    const locations = DataProvider.getLocations();
+    const { trips, stays: rawStays } = DataProvider.loadAll();
 
-viewport.addEventListener('mousedown', (e) => {
-    isDragging = true;
-    startY = e.clientY;
-    startScrollTop = viewport.scrollTop;
-    viewport.style.cursor = 'grabbing';
-});
+    // Build full stays array with computed home stay
+    const fadeHours = config.fadeHours;
+    const homeLocation = config.homeLocation;
+    const dataStart = parseTimestamp(config.dataStartDate);
+    let stays;
+    if (trips.length > 0) {
+        stays = [
+            { location: homeLocation, start: dataStart, end: trips[0].depart },
+            ...rawStays
+        ];
+    } else {
+        stays = [...rawStays];
+    }
 
-document.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
+    // Populate state
+    CalendarState.trips = trips;
+    CalendarState.stays = stays;
+    CalendarState.locations = locations;
+    CalendarState.locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
+    CalendarState.fadeHours = fadeHours;
+    CalendarState.homeLocation = homeLocation;
+    CalendarState.canvas = document.getElementById('calendarCanvas');
+    CalendarState.viewport = document.getElementById('calendarViewport');
 
-    const deltaY = startY - e.clientY; // Inverted for natural scroll direction
-    viewport.scrollTop = startScrollTop + deltaY;
-});
+    // Calculate initial range: 13 weeks back from today + 52 weeks forward
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPos = getGridPosition(today.getTime());
+    const todayWeek = todayPos.row; // absolute week from epoch
 
-document.addEventListener('mouseup', () => {
-    isDragging = false;
-    viewport.style.cursor = 'default';
-});
+    const initialStartWeek = todayWeek - 13;
+    const initialEndWeek = todayWeek + 52;
 
-// Prevent text selection while dragging
-viewport.addEventListener('selectstart', (e) => {
-    if (isDragging) e.preventDefault();
-});
+    // Set origin so renderedStartWeek maps to top=0 in canvas
+    CalendarState.originY = -initialStartWeek * CELL_SIZE;
+    CalendarState.renderedStartWeek = initialStartWeek;
+    CalendarState.renderedEndWeek = initialStartWeek; // will be extended
 
-// Scroll to center today's date on load (fall back to data start if today is out of range)
-setTimeout(() => {
-    const todayTime = today.getTime();
-    const inRange = todayTime >= calendarStart.getTime() && todayTime < calendarEnd.getTime();
-    const scrollTarget = inRange ? todayTime : dataStart;
-    const targetPos = getGridPosition(scrollTarget);
-    const numRows = Math.ceil(numDays / 7);
-    const cellHeight = viewport.scrollHeight / numRows;
-    const targetY = targetPos.row * cellHeight;
-    viewport.scrollTop = targetY - viewport.clientHeight / 2 + cellHeight / 2;
-}, 100);
+    // Render initial chunks
+    const startChunk = getChunkIndex(initialStartWeek);
+    const endChunk = getChunkIndex(initialEndWeek - 1);
+    for (let ci = startChunk; ci <= endChunk; ci++) {
+        renderChunk(ci);
+    }
+    CalendarState.renderedEndWeek = (endChunk + 1) * CHUNK_WEEKS;
+    updateCanvasSize();
 
-console.log('Calendar prototype loaded with', numDays, 'days from', calendarStart.toDateString(), 'to', calendarEnd.toDateString());
+    // Scroll to today
+    const todayY = rowToY(todayWeek);
+    const viewportHeight = CalendarState.viewport.clientHeight;
+    CalendarState.viewport.scrollTop = todayY - viewportHeight / 2 + CELL_SIZE / 2;
 
-} // end initCalendar
+    // Set up scroll handler
+    CalendarState.viewport.addEventListener('scroll', () => {
+        if (scrollRAF) return;
+        scrollRAF = requestAnimationFrame(() => {
+            handleScroll();
+            scrollRAF = null;
+        });
+    }, { passive: true });
+
+    // Set up drag scroll
+    setupDragScroll(CalendarState.viewport);
+
+    console.log('Calendar initialized: weeks', initialStartWeek, 'to', initialEndWeek,
+        `(${CalendarState.chunks.size} chunks)`);
+}
 
 initCalendar();
