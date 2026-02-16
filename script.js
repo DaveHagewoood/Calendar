@@ -69,9 +69,11 @@ const CalendarState = {
 // ============================================================
 const DataProvider = {
     _data: null,
+    _derived: null, // cached derived trips/stays
 
     init() {
         this._data = CALENDAR_DATA;
+        this._derived = null;
     },
 
     getLocations() {
@@ -82,42 +84,68 @@ const DataProvider = {
         return this._data.config;
     },
 
-    // Get trips and stays overlapping a time range
-    loadRange(startTime, endTime) {
-        const trips = this._data.trips
-            .map(t => ({
-                ...t,
-                depart: parseTimestamp(t.depart),
-                arrive: parseTimestamp(t.arrive)
-            }))
-            .filter(t => t.arrive > startTime && t.depart < endTime);
-
-        const stays = this._data.stays
-            .map(s => ({
-                ...s,
-                start: parseTimestamp(s.start),
-                end: parseTimestamp(s.end)
-            }))
-            .filter(s => s.end > startTime && s.start < endTime);
-
-        return { trips, stays };
+    getInitialLocation() {
+        const il = this._data.initialLocation;
+        return { name: il.name, at: parseTimestamp(il.at) };
     },
 
-    // Get ALL trips and stays (for computing derived data like home stay)
+    // Derive from/arrive/stays from minimal trip data
+    _derive() {
+        if (this._derived) return this._derived;
+
+        const il = this.getInitialLocation();
+        const rawTrips = this._data.trips;
+        const trips = [];
+        const stays = [];
+
+        let currentLocation = il.name;
+        let currentTime = il.at;
+
+        for (let i = 0; i < rawTrips.length; i++) {
+            const raw = rawTrips[i];
+            const depart = parseTimestamp(raw.depart);
+            const totalMinutes = raw.legs.reduce((sum, leg) => sum + leg.duration, 0);
+            const arrive = depart + totalMinutes * 60 * 1000;
+
+            // Stay at current location: from currentTime to this trip's departure
+            if (depart > currentTime) {
+                stays.push({
+                    location: currentLocation,
+                    start: currentTime,
+                    end: depart
+                });
+            }
+
+            // The trip itself with derived fields
+            trips.push({
+                from: currentLocation,
+                to: raw.to,
+                depart,
+                arrive,
+                legs: raw.legs,
+                stay: raw.stay || {}
+            });
+
+            currentLocation = raw.to;
+            currentTime = arrive;
+        }
+
+        // Last stay: zero-length at final destination (fade-out starts from arrive)
+        if (rawTrips.length > 0) {
+            stays.push({
+                location: currentLocation,
+                start: currentTime,
+                end: currentTime
+            });
+        }
+
+        this._derived = { trips, stays };
+        return this._derived;
+    },
+
+    // Get ALL trips and stays
     loadAll() {
-        const trips = this._data.trips.map(t => ({
-            ...t,
-            depart: parseTimestamp(t.depart),
-            arrive: parseTimestamp(t.arrive)
-        }));
-
-        const stays = this._data.stays.map(s => ({
-            ...s,
-            start: parseTimestamp(s.start),
-            end: parseTimestamp(s.end)
-        }));
-
-        return { trips, stays };
+        return this._derive();
     }
 };
 
@@ -271,6 +299,7 @@ function renderTrips(container, trips, clipStart, clipEnd) {
 function renderUndefined(container, clipStart, clipEnd) {
     const { stays, trips, fadeHours } = CalendarState;
     const fadeDuration = fadeHours * 60 * 60 * 1000;
+    const il = DataProvider.getInitialLocation();
 
     if (stays.length === 0 && trips.length === 0) {
         renderSegment(container, clipStart, clipEnd,
@@ -278,22 +307,17 @@ function renderUndefined(container, clipStart, clipEnd) {
         return;
     }
 
-    // Before: undefined ends where fade-in starts (48h before first trip)
-    const firstTrip = trips.length > 0 ? trips[0] : null;
-    const firstStay = stays.length > 0 ? stays[0] : null;
-    const firstEventTime = firstTrip ? firstTrip.depart : firstStay.start;
-    const fadeInStart = firstEventTime - fadeDuration;
+    // Before: undefined ends where fade-in starts (48h before initialLocation.at)
+    const fadeInStart = il.at - fadeDuration;
 
     if (clipStart < fadeInStart) {
         renderSegment(container, clipStart, fadeInStart,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
-    // After: undefined starts where fade-out ends (48h after last stay)
-    const lastStay = stays.length > 0 ? stays[stays.length - 1] : null;
-    const lastTrip = trips.length > 0 ? trips[trips.length - 1] : null;
-    const lastEventTime = lastStay ? lastStay.end : lastTrip.arrive;
-    const fadeOutEnd = lastEventTime + fadeDuration;
+    // After: undefined starts where fade-out ends (48h after last stay end)
+    const lastStay = stays[stays.length - 1];
+    const fadeOutEnd = lastStay.end + fadeDuration;
 
     if (clipEnd > fadeOutEnd) {
         renderSegment(container, fadeOutEnd, clipEnd,
@@ -301,13 +325,12 @@ function renderUndefined(container, clipStart, clipEnd) {
     }
 }
 
-// Render fade-in gradient before first trip (into departure location color)
+// Render fade-in gradient before initial location
 function renderFadeIn(container, clipStart, clipEnd) {
-    const { trips, fadeHours } = CalendarState;
-    if (trips.length === 0) return;
+    const { fadeHours } = CalendarState;
+    const il = DataProvider.getInitialLocation();
 
-    const firstTrip = trips[0];
-    const fadeInEnd = firstTrip.depart;
+    const fadeInEnd = il.at;
     const fadeInStart = fadeInEnd - (fadeHours * 60 * 60 * 1000);
     const fadeInDuration = fadeInEnd - fadeInStart;
 
@@ -317,7 +340,7 @@ function renderFadeIn(container, clipStart, clipEnd) {
     const clippedEnd = Math.min(fadeInEnd, clipEnd);
     const startPos = getGridPosition(clippedStart);
     const endPos = getGridPosition(clippedEnd);
-    const locColor = getLocationColor(firstTrip.from);
+    const locColor = getLocationColor(il.name);
     const grayColor = '#3a3a3a';
 
     for (let row = startPos.row; row <= endPos.row; row++) {
