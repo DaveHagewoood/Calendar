@@ -148,6 +148,9 @@ function renderContinuousSegment(start, end, className, additionalClasses = []) 
 // Render calendar grid (day cells with numbers only)
 const calendarGrid = document.getElementById('calendarGrid');
 
+const today = new Date();
+today.setHours(0, 0, 0, 0);
+
 for (let i = 0; i < numDays; i++) {
     const date = new Date(calendarStart);
     date.setDate(date.getDate() + i);
@@ -160,6 +163,14 @@ for (let i = 0; i < numDays; i++) {
     const monthAbbr = date.toLocaleString('default', { month: 'short' });
     const dayNumber = document.createElement('div');
     dayNumber.className = 'day-number';
+
+    // Check if this is today
+    const cellDate = new Date(date);
+    cellDate.setHours(0, 0, 0, 0);
+    if (cellDate.getTime() === today.getTime()) {
+        dayNumber.classList.add('today');
+    }
+
     dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
 
     dayCell.appendChild(dayNumber);
@@ -509,13 +520,16 @@ viewport.addEventListener('selectstart', (e) => {
     if (isDragging) e.preventDefault();
 });
 
-// Scroll to the data start (Jan 1, 2025) on load
+// Scroll to center today's date on load (fall back to data start if today is out of range)
 setTimeout(() => {
-    const dataStartPos = getGridPosition(dataStart);
+    const todayTime = today.getTime();
+    const inRange = todayTime >= calendarStart.getTime() && todayTime < calendarEnd.getTime();
+    const scrollTarget = inRange ? todayTime : dataStart;
+    const targetPos = getGridPosition(scrollTarget);
     const numRows = Math.ceil(numDays / 7);
-    const scrollToRow = Math.max(0, dataStartPos.row - 2); // Show 2 weeks before data
-    const scrollPercentage = scrollToRow / numRows;
-    viewport.scrollTop = viewport.scrollHeight * scrollPercentage;
+    const cellHeight = viewport.scrollHeight / numRows;
+    const targetY = targetPos.row * cellHeight;
+    viewport.scrollTop = targetY - viewport.clientHeight / 2 + cellHeight / 2;
 }, 100);
 
 console.log('Calendar prototype loaded with', numDays, 'days from', calendarStart.toDateString(), 'to', calendarEnd.toDateString());

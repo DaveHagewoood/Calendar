@@ -11,8 +11,8 @@ const CALENDAR_DATA = {
     ],
     "trips": [
         {
-            "depart": "2025-01-17T14:30",
-            "arrive": "2025-01-18T10:06",
+            "depart": "2026-01-17T14:30",
+            "arrive": "2026-01-18T10:06",
             "from": "home",
             "to": "paris",
             "legs": [
@@ -23,8 +23,8 @@ const CALENDAR_DATA = {
             ]
         },
         {
-            "depart": "2025-02-01T08:00",
-            "arrive": "2025-02-02T02:10",
+            "depart": "2026-02-01T08:00",
+            "arrive": "2026-02-02T02:10",
             "from": "paris",
             "to": "tokyo",
             "legs": [
@@ -35,8 +35,8 @@ const CALENDAR_DATA = {
             ]
         },
         {
-            "depart": "2025-02-11T16:00",
-            "arrive": "2025-02-12T23:00",
+            "depart": "2026-02-11T16:00",
+            "arrive": "2026-02-12T23:00",
             "from": "tokyo",
             "to": "beach",
             "legs": [
@@ -48,8 +48,8 @@ const CALENDAR_DATA = {
             ]
         },
         {
-            "depart": "2025-02-27T11:00",
-            "arrive": "2025-02-27T11:30",
+            "depart": "2026-02-27T11:00",
+            "arrive": "2026-02-27T11:30",
             "from": "beach",
             "to": "mountains",
             "legs": [
@@ -57,8 +57,8 @@ const CALENDAR_DATA = {
             ]
         },
         {
-            "depart": "2025-02-28T10:00",
-            "arrive": "2025-02-28T11:00",
+            "depart": "2026-02-28T10:00",
+            "arrive": "2026-02-28T11:00",
             "from": "mountains",
             "to": "lake",
             "legs": [
@@ -69,34 +69,34 @@ const CALENDAR_DATA = {
     "stays": [
         {
             "location": "paris",
-            "start": "2025-01-18T10:06",
-            "end": "2025-02-01T08:00"
+            "start": "2026-01-18T10:06",
+            "end": "2026-02-01T08:00"
         },
         {
             "location": "tokyo",
-            "start": "2025-02-02T02:10",
-            "end": "2025-02-11T16:00"
+            "start": "2026-02-02T02:10",
+            "end": "2026-02-11T16:00"
         },
         {
             "location": "beach",
-            "start": "2025-02-12T23:00",
-            "end": "2025-02-27T11:00"
+            "start": "2026-02-12T23:00",
+            "end": "2026-02-27T11:00"
         },
         {
             "location": "mountains",
-            "start": "2025-02-27T11:30",
-            "end": "2025-02-28T10:00"
+            "start": "2026-02-27T11:30",
+            "end": "2026-02-28T10:00"
         },
         {
             "location": "lake",
-            "start": "2025-02-28T11:00",
-            "end": "2025-02-28T19:00"
+            "start": "2026-02-28T11:00",
+            "end": "2026-02-28T19:00"
         }
     ],
     "config": {
-        "calendarStartDate": "2024-10-01",
+        "calendarStartDate": "2025-10-01",
         "weeksToShow": 52,
-        "dataStartDate": "2025-01-01",
+        "dataStartDate": "2026-01-01",
         "fadeHours": 48,
         "homeLocation": "home"
     }
