@@ -110,7 +110,14 @@ const DataProvider = {
             }
             if (i > 0) {
                 const prev = events[i - 1];
-                const prevEnd = prev.depart || prev.arrive;
+                // Use end-of-day if no depart set
+                let prevEnd;
+                if (prev.depart !== null) {
+                    prevEnd = prev.depart;
+                } else {
+                    const pd = new Date(prev.arrive);
+                    prevEnd = new Date(pd.getFullYear(), pd.getMonth(), pd.getDate(), 23, 59, 59).getTime();
+                }
                 // Check travel doesn't overlap previous event
                 let thisStart = e.arrive;
                 if (e.travel && e.travel.legs && e.travel.legs.length > 0) {
@@ -144,17 +151,17 @@ const DataProvider = {
         for (let i = 0; i < events.length; i++) {
             const e = events[i];
             let stayEnd;
+            const estimated = [...e.estimated];
 
             if (e.depart !== null) {
                 stayEnd = e.depart;
-            } else if (i < events.length - 1) {
-                // Extend to next event's travel start or arrive
-                const next = events[i + 1];
-                const nextTravel = travel.find(t => t.eventId === next.id);
-                stayEnd = nextTravel ? nextTravel.start : next.arrive;
             } else {
-                // Last event with no depart: zero-length (fade-out starts from arrive)
-                stayEnd = e.arrive;
+                // No departure set — default to end of arrival day
+                const arriveDate = new Date(e.arrive);
+                stayEnd = new Date(arriveDate.getFullYear(), arriveDate.getMonth(), arriveDate.getDate(), 23, 59, 59).getTime();
+                if (!estimated.includes('depart')) {
+                    estimated.push('depart');
+                }
             }
 
             if (stayEnd > e.arrive) {
@@ -162,7 +169,7 @@ const DataProvider = {
                     location: e.location,
                     start: e.arrive,
                     end: stayEnd,
-                    estimated: e.estimated,
+                    estimated: estimated,
                 });
             }
         }
@@ -172,7 +179,9 @@ const DataProvider = {
         for (let i = 0; i < events.length - 1; i++) {
             const e = events[i];
             const next = events[i + 1];
-            const gapStart = e.depart || e.arrive;
+            // Use derived stay end for gap start
+            const stay = stays.find(s => s.start === e.arrive);
+            const gapStart = stay ? stay.end : e.arrive;
             const nextTravel = travel.find(t => t.eventId === next.id);
             const gapEnd = nextTravel ? nextTravel.start : next.arrive;
             if (gapEnd > gapStart) {
@@ -371,13 +380,15 @@ function renderUndefined(container, clipStart, clipEnd) {
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
-    // After last event (plus fade-out zone)
+    // After last event
     const lastEvent = events[events.length - 1];
-    const lastEnd = lastEvent.depart || lastEvent.arrive;
-    const fadeOutEnd = lastEnd + fadeDuration;
+    const lastStay = CalendarState.stays.find(s => s.start === lastEvent.arrive);
+    const lastEnd = lastStay ? lastStay.end : lastEvent.arrive;
+    const hasConfirmedDepart = lastEvent.depart !== null && !lastEvent.estimated.includes('depart');
+    const undefinedStart = hasConfirmedDepart ? lastEnd + fadeDuration : lastEnd;
 
-    if (clipEnd > fadeOutEnd) {
-        renderSegment(container, fadeOutEnd, clipEnd,
+    if (clipEnd > undefinedStart) {
+        renderSegment(container, undefinedStart, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
@@ -440,13 +451,15 @@ function renderFadeIn(container, clipStart, clipEnd) {
     }
 }
 
-// Render fade-out gradient after last event
+// Render fade-out gradient after last event (only if depart is confirmed)
 function renderFadeOut(container, clipStart, clipEnd) {
     const { events, fadeHours } = CalendarState;
     if (events.length === 0) return;
 
     const lastEvent = events[events.length - 1];
-    const fadeOutStart = lastEvent.depart || lastEvent.arrive;
+    // Don't fade out from estimated/missing depart — the stay just ends
+    if (lastEvent.depart === null || lastEvent.estimated.includes('depart')) return;
+    const fadeOutStart = lastEvent.depart;
     const fadeOutEnd = fadeOutStart + (fadeHours * 60 * 60 * 1000);
     const fadeOutDuration = fadeOutEnd - fadeOutStart;
 
@@ -827,11 +840,13 @@ function isUndefinedTime(timestamp) {
         const fadeInStart = fadeInEnd - (CalendarState.fadeHours * 60 * 60 * 1000);
         if (timestamp >= fadeInStart && timestamp < fadeInEnd) return false;
 
-        // In fade-out zone?
+        // In fade-out zone? (only if last event has confirmed depart)
         const lastEvent = events[events.length - 1];
-        const fadeOutStart = lastEvent.depart || lastEvent.arrive;
-        const fadeOutEnd = fadeOutStart + (CalendarState.fadeHours * 60 * 60 * 1000);
-        if (timestamp >= fadeOutStart && timestamp < fadeOutEnd) return false;
+        if (lastEvent.depart !== null && !lastEvent.estimated.includes('depart')) {
+            const fadeOutStart = lastEvent.depart;
+            const fadeOutEnd = fadeOutStart + (CalendarState.fadeHours * 60 * 60 * 1000);
+            if (timestamp >= fadeOutStart && timestamp < fadeOutEnd) return false;
+        }
     }
     return true;
 }
@@ -898,6 +913,10 @@ function closeTripPanel() {
 // ============================================================
 // Event Entry Panel
 // ============================================================
+
+// Pending event being created
+let pendingEvent = null;
+
 function createEventPanel() {
     const container = document.querySelector('.mobile-container');
 
@@ -922,14 +941,18 @@ function createEventPanel() {
                 <div class="event-field-label">Arrival</div>
                 <div class="event-field-value" id="eventArrive"></div>
             </div>
-            <div class="event-field">
+            <div class="event-field" id="eventLocationField">
                 <div class="event-field-label">Location</div>
-                <div class="event-field-value event-field-empty">Tap to set destination</div>
+                <div class="event-field-value event-field-empty" id="eventLocationValue">Tap to set destination</div>
+                <div class="location-picker" id="locationPicker"></div>
             </div>
             <div class="event-field">
                 <div class="event-field-label">Departure</div>
                 <div class="event-field-value event-field-empty" id="eventDepart">Not set</div>
             </div>
+        </div>
+        <div class="event-panel-footer">
+            <button class="event-save-btn" id="eventSaveBtn" disabled>Save Trip</button>
         </div>
     `;
 
@@ -937,34 +960,143 @@ function createEventPanel() {
     container.appendChild(panel);
 
     panel.querySelector('#eventPanelClose').addEventListener('click', closeEventPanel);
+    panel.querySelector('#eventLocationField').addEventListener('click', toggleLocationPicker);
+    panel.querySelector('#eventSaveBtn').addEventListener('click', saveEvent);
 
     CalendarState.eventPanel = panel;
     CalendarState.eventBackdrop = backdrop;
 }
 
+function buildLocationPicker() {
+    const picker = CalendarState.eventPanel.querySelector('#locationPicker');
+    picker.innerHTML = '';
+    CalendarState.locations.forEach(loc => {
+        const opt = document.createElement('div');
+        opt.className = 'location-option';
+        opt.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span><span>${loc.label}</span>`;
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectLocation(loc);
+        });
+        picker.appendChild(opt);
+    });
+}
+
+function toggleLocationPicker() {
+    const picker = CalendarState.eventPanel.querySelector('#locationPicker');
+    picker.classList.toggle('open');
+}
+
+function selectLocation(loc) {
+    pendingEvent.location = loc.name;
+
+    const valueEl = CalendarState.eventPanel.querySelector('#eventLocationValue');
+    valueEl.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span>${loc.label}`;
+    valueEl.classList.remove('event-field-empty');
+
+    // Update title to location name (default behavior)
+    CalendarState.eventPanel.querySelector('#eventTripName').textContent = loc.label;
+
+    // Close picker and enable save
+    CalendarState.eventPanel.querySelector('#locationPicker').classList.remove('open');
+    CalendarState.eventPanel.querySelector('#eventSaveBtn').disabled = false;
+}
+
 function openEventPanel(date) {
     const { eventPanel, eventBackdrop } = CalendarState;
 
+    // Initialize pending event with noon default
+    const arriveDate = new Date(date);
+    arriveDate.setHours(12, 0, 0, 0);
+    pendingEvent = {
+        arrive: arriveDate,
+        location: null,
+        depart: null,
+        estimated: ['arrive'],
+    };
+
     const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                     'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const dateStr = `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dateStr = `${dayNames[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 
     const arriveEl = eventPanel.querySelector('#eventArrive');
     arriveEl.innerHTML = `${dateStr} <span class="event-field-estimated">~12:00 PM</span>`;
 
-    // Reset departure to empty state
+    // Reset location
+    const locValue = eventPanel.querySelector('#eventLocationValue');
+    locValue.textContent = 'Tap to set destination';
+    locValue.classList.add('event-field-empty');
+    eventPanel.querySelector('#locationPicker').classList.remove('open');
+
+    // Reset title
+    eventPanel.querySelector('#eventTripName').textContent = 'New Trip';
+
+    // Reset departure
     const depart = eventPanel.querySelector('#eventDepart');
     depart.textContent = 'Not set';
     depart.classList.add('event-field-empty');
+
+    // Reset save button
+    eventPanel.querySelector('#eventSaveBtn').disabled = true;
+
+    // Build location options
+    buildLocationPicker();
 
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');
 }
 
+function saveEvent() {
+    if (!pendingEvent || !pendingEvent.location) return;
+
+    // Build ISO string for arrive
+    const d = pendingEvent.arrive;
+    const pad = (n) => String(n).padStart(2, '0');
+    const arriveISO = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+
+    // Generate unique id
+    const maxId = CALENDAR_DATA.events.reduce((max, e) => {
+        const num = parseInt(e.id.replace('evt-', ''), 10);
+        return num > max ? num : max;
+    }, 0);
+    const newId = `evt-${maxId + 1}`;
+
+    // Add to source data
+    const newEvent = {
+        id: newId,
+        location: pendingEvent.location,
+        arrive: arriveISO,
+        depart: pendingEvent.depart || null,
+        estimated: pendingEvent.estimated,
+    };
+    CALENDAR_DATA.events.push(newEvent);
+
+    // Re-derive and re-render
+    refreshCalendar();
+    closeEventPanel();
+}
+
+function refreshCalendar() {
+    // Clear derived cache and re-derive
+    DataProvider._derived = null;
+    const { events, stays, travel, gaps } = DataProvider.loadAll();
+
+    CalendarState.events = events;
+    CalendarState.stays = stays;
+    CalendarState.travel = travel;
+    CalendarState.gaps = gaps;
+
+    // Re-render all visible chunks
+    const chunkIndices = [...CalendarState.chunks.keys()];
+    chunkIndices.forEach(ci => removeChunk(ci));
+    chunkIndices.forEach(ci => renderChunk(ci));
+}
+
 function closeEventPanel() {
     CalendarState.eventBackdrop.classList.remove('open');
     CalendarState.eventPanel.classList.remove('open');
+    pendingEvent = null;
 }
 
 // ============================================================
