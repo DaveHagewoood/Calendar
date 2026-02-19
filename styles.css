@@ -532,6 +532,207 @@ body {
     color: #bbb;
 }
 
+/* Chain builder */
+.chain-builder {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.chain-builder.open {
+    max-height: 500px;
+    margin-top: 10px;
+}
+
+.chain-preview {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px;
+    min-height: 36px;
+    padding: 8px;
+    background: #1a1a1a;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
+
+.chain-empty {
+    color: #555;
+    font-size: 12px;
+    font-style: italic;
+}
+
+.chain-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    background: #2a2a2a;
+    border-radius: 6px;
+    padding: 4px 6px;
+}
+
+.chain-icon {
+    font-size: 18px;
+}
+
+.chain-remove {
+    font-size: 14px;
+    color: #666;
+    cursor: pointer;
+    margin-left: 2px;
+}
+
+.chain-remove:hover {
+    color: #e55;
+}
+
+.chain-arrow {
+    color: #555;
+    font-size: 14px;
+    margin: 0 2px;
+}
+
+.chain-modes {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 4px;
+    margin-bottom: 10px;
+}
+
+.chain-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.mode-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 8px 4px;
+    background: #2a2a2a;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+}
+
+.mode-btn:hover {
+    background: #383838;
+}
+
+.mode-icon {
+    font-size: 18px;
+    line-height: 1;
+}
+
+.mode-label {
+    font-size: 10px;
+    color: #aaa;
+}
+
+/* Shared builder inputs and buttons */
+.leg-builder-fields {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.leg-input {
+    flex: 1;
+    padding: 8px 10px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 13px;
+    outline: none;
+}
+
+.leg-input:focus {
+    border-color: #3b82f6;
+}
+
+.leg-input::placeholder {
+    color: #666;
+}
+
+.leg-duration-input {
+    max-width: 80px;
+    flex: 0 0 80px;
+}
+
+.leg-cancel-btn, .leg-confirm-btn {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.leg-cancel-btn {
+    background: #333;
+    color: #aaa;
+}
+
+.leg-confirm-btn {
+    background: #3b82f6;
+    color: #fff;
+}
+
+.leg-detail-header {
+    font-size: 15px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 10px;
+}
+
+/* Leg items display */
+.leg-item {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 0;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+.leg-item:last-child {
+    border-bottom: none;
+}
+
+.leg-item-tappable {
+    cursor: pointer;
+}
+
+.leg-item-tappable:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.leg-item-icon {
+    font-size: 18px;
+    flex-shrink: 0;
+    width: 24px;
+    text-align: center;
+}
+
+.leg-item-info {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.leg-item-note {
+    font-size: 13px;
+    color: #ccc;
+}
+
+.leg-item-duration {
+    font-size: 11px;
+    color: #888;
+}
+
 /* Time picker */
 .time-picker {
     max-height: 0;

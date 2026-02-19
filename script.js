@@ -933,9 +933,21 @@ function createEventPanel() {
             <button class="trip-panel-close" id="eventPanelClose">&times;</button>
         </div>
         <div class="event-panel-body">
-            <div class="event-field event-field-add">
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
-                <span>Add Transportation</span>
+            <div class="event-field" id="eventTransportSection">
+                <div class="event-field-label">Transportation</div>
+                <div id="eventLegsDisplay"></div>
+                <div class="event-field-add" id="openChainBuilder">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
+                    <span>Tap to set transportation</span>
+                </div>
+                <div class="chain-builder" id="chainBuilder">
+                    <div class="chain-preview" id="chainPreview"></div>
+                    <div class="chain-modes" id="chainModes"></div>
+                    <div class="chain-actions">
+                        <button class="leg-cancel-btn" id="chainCancelBtn">Cancel</button>
+                        <button class="leg-confirm-btn" id="chainDoneBtn">Done</button>
+                    </div>
+                </div>
             </div>
             <div class="event-field">
                 <div class="event-field-label">Arrival</div>
@@ -1014,8 +1026,191 @@ function createEventPanel() {
         updateDepartDisplay();
     });
 
+    // Transportation chain builder
+    panel.querySelector('#openChainBuilder').addEventListener('click', () => {
+        openChainBuilder();
+    });
+    panel.querySelector('#chainCancelBtn').addEventListener('click', () => {
+        closeChainBuilder();
+    });
+    panel.querySelector('#chainDoneBtn').addEventListener('click', () => {
+        confirmChain();
+    });
+
     CalendarState.eventPanel = panel;
     CalendarState.eventBackdrop = backdrop;
+}
+
+// Chain builder state
+let chainModes = []; // modes being built in the chain builder
+
+function openChainBuilder() {
+    const panel = CalendarState.eventPanel;
+    // Initialize chain from existing legs if any
+    if (pendingEvent.travel && pendingEvent.travel.legs.length > 0) {
+        chainModes = pendingEvent.travel.legs.map(l => l.mode);
+    } else {
+        chainModes = [];
+    }
+    buildChainModeButtons();
+    updateChainPreview();
+    panel.querySelector('#chainBuilder').classList.add('open');
+    panel.querySelector('#openChainBuilder').style.display = 'none';
+}
+
+function closeChainBuilder() {
+    const panel = CalendarState.eventPanel;
+    panel.querySelector('#chainBuilder').classList.remove('open');
+    panel.querySelector('#openChainBuilder').style.display = '';
+    chainModes = [];
+}
+
+function buildChainModeButtons() {
+    const container = CalendarState.eventPanel.querySelector('#chainModes');
+    container.innerHTML = '';
+    Object.entries(transportModes).forEach(([key, mode]) => {
+        const btn = document.createElement('div');
+        btn.className = 'mode-btn';
+        btn.innerHTML = `<span class="mode-icon">${mode.icon}</span><span class="mode-label">${mode.label}</span>`;
+        btn.addEventListener('click', () => {
+            chainModes.push(key);
+            updateChainPreview();
+        });
+        container.appendChild(btn);
+    });
+}
+
+function updateChainPreview() {
+    const preview = CalendarState.eventPanel.querySelector('#chainPreview');
+    if (chainModes.length === 0) {
+        preview.innerHTML = '<span class="chain-empty">Tap modes below to build your route</span>';
+        return;
+    }
+    preview.innerHTML = chainModes.map((mode, i) => {
+        const m = transportModes[mode] || { icon: '📍' };
+        const arrow = i < chainModes.length - 1 ? '<span class="chain-arrow">→</span>' : '';
+        return `<span class="chain-item" data-index="${i}"><span class="chain-icon">${m.icon}</span><span class="chain-remove" data-index="${i}">×</span></span>${arrow}`;
+    }).join('');
+
+    // Wire up remove buttons
+    preview.querySelectorAll('.chain-remove').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = parseInt(btn.dataset.index, 10);
+            chainModes.splice(idx, 1);
+            updateChainPreview();
+        });
+    });
+}
+
+function confirmChain() {
+    if (chainModes.length === 0) {
+        // Clear travel
+        pendingEvent.travel = null;
+    } else {
+        // Build legs from chain — preserve existing leg details if mode matches
+        const oldLegs = (pendingEvent.travel && pendingEvent.travel.legs) || [];
+        const newLegs = chainModes.map((mode, i) => {
+            // Try to reuse existing leg at same position with same mode
+            if (i < oldLegs.length && oldLegs[i].mode === mode) {
+                return { ...oldLegs[i] };
+            }
+            return { mode, duration: 0, note: '' };
+        });
+        pendingEvent.travel = { legs: newLegs };
+    }
+    renderLegsDisplay();
+    closeChainBuilder();
+}
+
+function renderLegsDisplay() {
+    const container = CalendarState.eventPanel.querySelector('#eventLegsDisplay');
+    container.innerHTML = '';
+
+    if (!pendingEvent.travel || pendingEvent.travel.legs.length === 0) {
+        // Update the "tap to set" text
+        const addBtn = CalendarState.eventPanel.querySelector('#openChainBuilder span');
+        addBtn.textContent = 'Tap to set transportation';
+        return;
+    }
+
+    // Update button text to "Edit"
+    const addBtn = CalendarState.eventPanel.querySelector('#openChainBuilder span');
+    addBtn.textContent = 'Edit transportation';
+
+    pendingEvent.travel.legs.forEach((leg, i) => {
+        const mode = transportModes[leg.mode] || { icon: '📍', label: leg.mode };
+        const hasDuration = leg.duration > 0;
+        const hasNote = leg.note && leg.note.length > 0;
+
+        const el = document.createElement('div');
+        el.className = 'leg-item leg-item-tappable';
+        el.innerHTML = `
+            <span class="leg-item-icon">${mode.icon}</span>
+            <span class="leg-item-info">
+                <span class="leg-item-note ${hasNote ? '' : 'event-field-empty'}">${hasNote ? leg.note : mode.label}</span>
+                <span class="leg-item-duration ${hasDuration ? '' : 'event-field-estimated'}">${hasDuration ? formatDuration(leg.duration) : '~duration not set'}</span>
+            </span>
+        `;
+        el.addEventListener('click', () => openLegDetail(i));
+        container.appendChild(el);
+    });
+}
+
+function openLegDetail(index) {
+    const leg = pendingEvent.travel.legs[index];
+    const mode = transportModes[leg.mode] || { icon: '📍', label: leg.mode };
+
+    // Simple prompt-style inline edit using the chain builder area
+    const panel = CalendarState.eventPanel;
+    const builder = panel.querySelector('#chainBuilder');
+
+    builder.innerHTML = `
+        <div class="leg-detail-header">${mode.icon} ${mode.label}</div>
+        <div class="leg-builder-fields">
+            <input type="number" class="leg-input leg-duration-input" id="legDetailDuration" placeholder="Minutes" min="1" value="${leg.duration || ''}">
+            <input type="text" class="leg-input leg-note-input" id="legDetailNote" placeholder="Note (e.g. SFO → JFK)" value="${leg.note || ''}">
+        </div>
+        <div class="chain-actions">
+            <button class="leg-cancel-btn" id="legDetailCancel">Cancel</button>
+            <button class="leg-confirm-btn" id="legDetailSave">Save</button>
+        </div>
+    `;
+
+    panel.querySelector('#legDetailCancel').addEventListener('click', () => {
+        closeLegDetail();
+    });
+    panel.querySelector('#legDetailSave').addEventListener('click', () => {
+        const duration = parseInt(panel.querySelector('#legDetailDuration').value, 10);
+        const note = panel.querySelector('#legDetailNote').value.trim();
+        if (duration > 0) leg.duration = duration;
+        if (note) leg.note = note;
+        closeLegDetail();
+        renderLegsDisplay();
+    });
+
+    builder.classList.add('open');
+    panel.querySelector('#openChainBuilder').style.display = 'none';
+}
+
+function closeLegDetail() {
+    const panel = CalendarState.eventPanel;
+    const builder = panel.querySelector('#chainBuilder');
+    builder.classList.remove('open');
+    panel.querySelector('#openChainBuilder').style.display = '';
+
+    // Restore chain builder HTML for next use
+    builder.innerHTML = `
+        <div class="chain-preview" id="chainPreview"></div>
+        <div class="chain-modes" id="chainModes"></div>
+        <div class="chain-actions">
+            <button class="leg-cancel-btn" id="chainCancelBtn">Cancel</button>
+            <button class="leg-confirm-btn" id="chainDoneBtn">Done</button>
+        </div>
+    `;
+    // Re-wire buttons
+    panel.querySelector('#chainCancelBtn').addEventListener('click', () => closeChainBuilder());
+    panel.querySelector('#chainDoneBtn').addEventListener('click', () => confirmChain());
 }
 
 function buildLocationPicker() {
@@ -1236,6 +1431,7 @@ function openEventPanel(date) {
         location: null,
         depart: departDate,
         estimated: ['arrive', 'depart'],
+        travel: null,
     };
 
     // Update displays
@@ -1250,6 +1446,10 @@ function openEventPanel(date) {
 
     // Reset title
     eventPanel.querySelector('#eventTripName').textContent = 'New Trip';
+
+    // Reset transportation
+    renderLegsDisplay();
+    closeChainBuilder();
 
     // Reset save button
     eventPanel.querySelector('#eventSaveBtn').disabled = true;
@@ -1284,6 +1484,9 @@ function saveEvent() {
         depart: pendingEvent.depart ? toISO(pendingEvent.depart) : null,
         estimated: pendingEvent.estimated,
     };
+    if (pendingEvent.travel && pendingEvent.travel.legs.length > 0) {
+        newEvent.travel = pendingEvent.travel;
+    }
     CALENDAR_DATA.events.push(newEvent);
 
     // Re-derive and re-render
