@@ -61,6 +61,9 @@ const CalendarState = {
     locationMap: {},
     fadeHours: 48,
 
+    // Interaction state
+    wasDrag: false,
+
     // DOM refs (set during init)
     canvas: null,
     viewport: null,
@@ -277,6 +280,16 @@ function renderDayCells(container, startDayIndex, numDays) {
 
         dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
         cell.appendChild(dayNumber);
+
+        // Click handler for undefined days
+        const dayTime = date.getTime();
+        cell.addEventListener('click', () => {
+            if (CalendarState.wasDrag) return;
+            if (isUndefinedTime(dayTime)) {
+                openEventPanel(date);
+            }
+        });
+
         container.appendChild(cell);
     }
 }
@@ -706,10 +719,12 @@ function handleScroll() {
 function setupDragScroll(viewport) {
     let isDragging = false;
     let lastY = 0;
+    let totalDragDistance = 0;
 
     viewport.addEventListener('mousedown', (e) => {
         isDragging = true;
         lastY = e.clientY;
+        totalDragDistance = 0;
         viewport.style.cursor = 'grabbing';
     });
 
@@ -717,10 +732,12 @@ function setupDragScroll(viewport) {
         if (!isDragging) return;
         const deltaY = lastY - e.clientY;
         lastY = e.clientY;
+        totalDragDistance += Math.abs(deltaY);
         viewport.scrollTop += deltaY;
     });
 
     document.addEventListener('mouseup', () => {
+        CalendarState.wasDrag = totalDragDistance > 5;
         isDragging = false;
         viewport.style.cursor = 'default';
     });
@@ -786,6 +803,33 @@ function lerpColor(hex1, hex2, t) {
     return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
 }
 
+// Check if a timestamp falls in an undefined period (not in any stay, travel, or fade)
+function isUndefinedTime(timestamp) {
+    const { events, stays, travel } = CalendarState;
+    // In a stay?
+    for (const s of stays) {
+        if (timestamp >= s.start && timestamp < s.end) return false;
+    }
+    // In travel?
+    for (const t of travel) {
+        if (timestamp >= t.start && timestamp < t.end) return false;
+    }
+    // In fade-in zone?
+    if (events.length > 0) {
+        const firstTravel = travel.find(t => t.eventId === events[0].id);
+        const fadeInEnd = firstTravel ? firstTravel.start : events[0].arrive;
+        const fadeInStart = fadeInEnd - (CalendarState.fadeHours * 60 * 60 * 1000);
+        if (timestamp >= fadeInStart && timestamp < fadeInEnd) return false;
+
+        // In fade-out zone?
+        const lastEvent = events[events.length - 1];
+        const fadeOutStart = lastEvent.depart || lastEvent.arrive;
+        const fadeOutEnd = fadeOutStart + (CalendarState.fadeHours * 60 * 60 * 1000);
+        if (timestamp >= fadeOutStart && timestamp < fadeOutEnd) return false;
+    }
+    return true;
+}
+
 function getLocationColor(name) {
     const loc = CalendarState.locationMap[name];
     if (loc) return loc.color;
@@ -846,6 +890,72 @@ function closeTripPanel() {
 }
 
 // ============================================================
+// Event Entry Panel
+// ============================================================
+function createEventPanel() {
+    const container = document.querySelector('.mobile-container');
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'event-backdrop';
+    backdrop.addEventListener('click', closeEventPanel);
+
+    const panel = document.createElement('div');
+    panel.className = 'event-panel';
+    panel.innerHTML = `
+        <div class="trip-panel-handle"></div>
+        <div class="event-panel-header">
+            <div class="event-panel-title">New Event</div>
+            <button class="trip-panel-close" id="eventPanelClose">&times;</button>
+        </div>
+        <div class="event-panel-body">
+            <div class="event-field">
+                <div class="event-field-label">Arrive</div>
+                <div class="event-field-value" id="eventArriveDate"></div>
+            </div>
+            <div class="event-field">
+                <div class="event-field-label">Depart</div>
+                <div class="event-field-value event-field-empty">Not set</div>
+            </div>
+            <div class="event-field">
+                <div class="event-field-label">Location</div>
+                <div class="event-field-value event-field-empty">Tap to set destination</div>
+            </div>
+            <div class="event-field">
+                <div class="event-field-label">Travel</div>
+                <div class="event-field-value event-field-empty">No travel details</div>
+            </div>
+        </div>
+    `;
+
+    container.appendChild(backdrop);
+    container.appendChild(panel);
+
+    panel.querySelector('#eventPanelClose').addEventListener('click', closeEventPanel);
+
+    CalendarState.eventPanel = panel;
+    CalendarState.eventBackdrop = backdrop;
+}
+
+function openEventPanel(date) {
+    const { eventPanel, eventBackdrop } = CalendarState;
+
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const dateStr = `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
+
+    eventPanel.querySelector('#eventArriveDate').textContent = dateStr;
+
+    eventBackdrop.classList.add('open');
+    eventPanel.classList.add('open');
+}
+
+function closeEventPanel() {
+    CalendarState.eventBackdrop.classList.remove('open');
+    CalendarState.eventPanel.classList.remove('open');
+}
+
+// ============================================================
 // Initialize
 // ============================================================
 function initCalendar() {
@@ -866,8 +976,9 @@ function initCalendar() {
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
 
-    // Create trip detail panel
+    // Create panels
     createTripPanel();
+    createEventPanel();
 
     // Calculate initial range: 13 weeks back from today + 52 weeks forward
     const today = new Date();
