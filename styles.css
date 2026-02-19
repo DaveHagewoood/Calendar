@@ -244,10 +244,12 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    pointer-events: none;
 }
 
 .trip-panel.open {
     transform: translateY(0);
+    pointer-events: auto;
 }
 
 .trip-panel-handle {
@@ -411,10 +413,12 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
+    pointer-events: none;
 }
 
 .event-panel.open {
     transform: translateY(0);
+    pointer-events: auto;
 }
 
 .event-panel-header {
@@ -446,6 +450,8 @@ body {
 
 .event-panel-body {
     padding: 6px 18px 24px;
+    overflow-y: auto;
+    flex: 1;
 }
 
 .event-field {
@@ -455,6 +461,38 @@ body {
 
 .event-field:last-child {
     border-bottom: none;
+}
+
+.event-field-tappable {
+    cursor: pointer;
+}
+
+.event-field-tappable:hover {
+    color: #3b82f6;
+}
+
+.event-field-datetime {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #fff;
+}
+
+.event-field-date {
+    flex-shrink: 0;
+}
+
+.event-field-time {
+    flex-shrink: 0;
+}
+
+.hidden-input {
+    position: absolute;
+    opacity: 0;
+    pointer-events: none;
+    width: 0;
+    height: 0;
 }
 
 .event-field-label {
@@ -492,6 +530,96 @@ body {
 
 .event-field-add:hover {
     color: #bbb;
+}
+
+/* Time picker */
+.time-picker {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+    margin-top: 0;
+}
+
+.time-picker.open {
+    max-height: 400px;
+    margin-top: 10px;
+}
+
+.tp-section {
+    margin-bottom: 8px;
+}
+
+.tp-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+}
+
+.tp-grid {
+    display: grid;
+    gap: 4px;
+}
+
+.tp-hours {
+    grid-template-columns: repeat(6, 1fr);
+}
+
+.tp-minutes {
+    grid-template-columns: repeat(6, 1fr);
+}
+
+.tp-btn {
+    padding: 8px 0;
+    text-align: center;
+    font-size: 13px;
+    color: #aaa;
+    background: #2a2a2a;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+
+.tp-btn:hover {
+    background: #383838;
+    color: #fff;
+}
+
+.tp-btn.tp-selected {
+    background: #3b82f6;
+    color: #fff;
+}
+
+.tp-ampm {
+    display: flex;
+    gap: 6px;
+}
+
+.tp-ampm-btn {
+    flex: 1;
+    padding: 8px 0;
+}
+
+.tp-done-row {
+    margin-top: 8px;
+}
+
+.tp-done-btn {
+    width: 100%;
+    padding: 10px;
+    border: none;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    background: #3b82f6;
+    color: #fff;
+    cursor: pointer;
+}
+
+.tp-done-btn:hover {
+    opacity: 0.9;
 }
 
 /* Location picker */

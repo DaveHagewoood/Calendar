@@ -939,7 +939,12 @@ function createEventPanel() {
             </div>
             <div class="event-field">
                 <div class="event-field-label">Arrival</div>
-                <div class="event-field-value" id="eventArrive"></div>
+                <div class="event-field-datetime">
+                    <span class="event-field-date event-field-tappable" id="eventArriveDate"></span>
+                    <span class="event-field-time event-field-tappable" id="eventArriveTime"></span>
+                </div>
+                <input type="date" id="eventArriveDateInput" class="hidden-input">
+                <div class="time-picker" id="arriveTimePicker"></div>
             </div>
             <div class="event-field" id="eventLocationField">
                 <div class="event-field-label">Location</div>
@@ -948,7 +953,12 @@ function createEventPanel() {
             </div>
             <div class="event-field">
                 <div class="event-field-label">Departure</div>
-                <div class="event-field-value event-field-empty" id="eventDepart">Not set</div>
+                <div class="event-field-datetime">
+                    <span class="event-field-date event-field-tappable" id="eventDepartDate"></span>
+                    <span class="event-field-time event-field-tappable" id="eventDepartTime"></span>
+                </div>
+                <input type="date" id="eventDepartDateInput" class="hidden-input">
+                <div class="time-picker" id="departTimePicker"></div>
             </div>
         </div>
         <div class="event-panel-footer">
@@ -962,6 +972,47 @@ function createEventPanel() {
     panel.querySelector('#eventPanelClose').addEventListener('click', closeEventPanel);
     panel.querySelector('#eventLocationField').addEventListener('click', toggleLocationPicker);
     panel.querySelector('#eventSaveBtn').addEventListener('click', saveEvent);
+
+    // Arrival date — native picker; time — custom inline picker
+    panel.querySelector('#eventArriveDate').addEventListener('click', () => {
+        panel.querySelector('#eventArriveDateInput').showPicker();
+    });
+    panel.querySelector('#eventArriveTime').addEventListener('click', () => {
+        openTimePicker('arriveTimePicker', pendingEvent.arrive, (h, min) => {
+            pendingEvent.arrive.setHours(h, min, 0, 0);
+            pendingEvent.estimated = pendingEvent.estimated.filter(f => f !== 'arrive');
+            updateArriveDisplay();
+        });
+    });
+    panel.querySelector('#eventArriveDateInput').addEventListener('change', (e) => {
+        if (!e.target.value || !pendingEvent) return;
+        const [y, m, d] = e.target.value.split('-').map(Number);
+        pendingEvent.arrive.setFullYear(y, m - 1, d);
+        if (pendingEvent.estimated.includes('depart')) {
+            pendingEvent.depart = new Date(y, m - 1, d, 23, 0, 0, 0);
+        }
+        updateArriveDisplay();
+        updateDepartDisplay();
+    });
+
+    // Departure date — native picker; time — custom inline picker
+    panel.querySelector('#eventDepartDate').addEventListener('click', () => {
+        panel.querySelector('#eventDepartDateInput').showPicker();
+    });
+    panel.querySelector('#eventDepartTime').addEventListener('click', () => {
+        openTimePicker('departTimePicker', pendingEvent.depart, (h, min) => {
+            pendingEvent.depart.setHours(h, min, 0, 0);
+            pendingEvent.estimated = pendingEvent.estimated.filter(f => f !== 'depart');
+            updateDepartDisplay();
+        });
+    });
+    panel.querySelector('#eventDepartDateInput').addEventListener('change', (e) => {
+        if (!e.target.value || !pendingEvent) return;
+        const [y, m, d] = e.target.value.split('-').map(Number);
+        pendingEvent.depart.setFullYear(y, m - 1, d);
+        pendingEvent.estimated = pendingEvent.estimated.filter(f => f !== 'depart');
+        updateDepartDisplay();
+    });
 
     CalendarState.eventPanel = panel;
     CalendarState.eventBackdrop = backdrop;
@@ -982,7 +1033,12 @@ function buildLocationPicker() {
     });
 }
 
+function closeAllTimePickers() {
+    CalendarState.eventPanel.querySelectorAll('.time-picker.open').forEach(p => p.classList.remove('open'));
+}
+
 function toggleLocationPicker() {
+    closeAllTimePickers();
     const picker = CalendarState.eventPanel.querySelector('#locationPicker');
     picker.classList.toggle('open');
 }
@@ -1002,26 +1058,189 @@ function selectLocation(loc) {
     CalendarState.eventPanel.querySelector('#eventSaveBtn').disabled = false;
 }
 
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+function formatDateStr(d) {
+    return `${DAY_NAMES[d.getDay()]}, ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+function formatTimeStr(d) {
+    let h = d.getHours();
+    const min = d.getMinutes();
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    return `${h}:${String(min).padStart(2, '0')} ${ampm}`;
+}
+
+// Custom inline time picker
+function openTimePicker(pickerId, currentDate, onSelect) {
+    const panel = CalendarState.eventPanel;
+    const picker = panel.querySelector(`#${pickerId}`);
+
+    // Close any other open time pickers
+    panel.querySelectorAll('.time-picker.open').forEach(p => {
+        if (p.id !== pickerId) p.classList.remove('open');
+    });
+
+    // Toggle if already open
+    if (picker.classList.contains('open')) {
+        picker.classList.remove('open');
+        return;
+    }
+
+    const currentH = currentDate.getHours();
+    const currentMin = currentDate.getMinutes();
+    const currentAmPm = currentH >= 12 ? 'pm' : 'am';
+    const current12 = currentH % 12 || 12;
+
+    // State for selection
+    let selectedHour = current12;
+    let selectedMinute = currentMin;
+    let selectedAmPm = currentAmPm;
+
+    // Build picker content
+    picker.innerHTML = `
+        <div class="tp-section">
+            <div class="tp-label">Hour</div>
+            <div class="tp-grid tp-hours">
+                ${[12,1,2,3,4,5,6,7,8,9,10,11].map(h =>
+                    `<div class="tp-btn${h === current12 ? ' tp-selected' : ''}" data-hour="${h}">${h}</div>`
+                ).join('')}
+            </div>
+        </div>
+        <div class="tp-section">
+            <div class="tp-label">Minute</div>
+            <div class="tp-grid tp-minutes">
+                ${[0,5,10,15,20,25,30,35,40,45,50,55].map(m =>
+                    `<div class="tp-btn${m === currentMin ? ' tp-selected' : ''}" data-minute="${m}">${String(m).padStart(2,'0')}</div>`
+                ).join('')}
+            </div>
+        </div>
+        <div class="tp-section">
+            <div class="tp-ampm">
+                <div class="tp-btn tp-ampm-btn${currentAmPm === 'am' ? ' tp-selected' : ''}" data-ampm="am">AM</div>
+                <div class="tp-btn tp-ampm-btn${currentAmPm === 'pm' ? ' tp-selected' : ''}" data-ampm="pm">PM</div>
+            </div>
+        </div>
+        <div class="tp-done-row">
+            <button class="tp-done-btn">Done</button>
+        </div>
+    `;
+
+    // Hour buttons
+    picker.querySelectorAll('[data-hour]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectedHour = parseInt(btn.dataset.hour, 10);
+            picker.querySelectorAll('.tp-hours .tp-btn').forEach(b => b.classList.remove('tp-selected'));
+            btn.classList.add('tp-selected');
+        });
+    });
+
+    // Minute buttons
+    picker.querySelectorAll('[data-minute]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectedMinute = parseInt(btn.dataset.minute, 10);
+            picker.querySelectorAll('.tp-minutes .tp-btn').forEach(b => b.classList.remove('tp-selected'));
+            btn.classList.add('tp-selected');
+        });
+    });
+
+    // AM/PM buttons
+    picker.querySelectorAll('[data-ampm]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectedAmPm = btn.dataset.ampm;
+            picker.querySelectorAll('.tp-ampm-btn').forEach(b => b.classList.remove('tp-selected'));
+            btn.classList.add('tp-selected');
+        });
+    });
+
+    // Done button
+    picker.querySelector('.tp-done-btn').addEventListener('click', (e) => {
+        e.stopPropagation();
+        let h24 = selectedHour % 12;
+        if (selectedAmPm === 'pm') h24 += 12;
+        onSelect(h24, selectedMinute);
+        picker.classList.remove('open');
+    });
+
+    picker.classList.add('open');
+}
+
+function formatInputDate(d) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function formatInputTime(d) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function updateArriveDisplay() {
+    if (!pendingEvent) return;
+    const panel = CalendarState.eventPanel;
+    const dateEl = panel.querySelector('#eventArriveDate');
+    const timeEl = panel.querySelector('#eventArriveTime');
+    const isEstimated = pendingEvent.estimated.includes('arrive');
+
+    dateEl.textContent = formatDateStr(pendingEvent.arrive);
+    if (isEstimated) {
+        timeEl.innerHTML = `<span class="event-field-estimated">~${formatTimeStr(pendingEvent.arrive)}</span>`;
+    } else {
+        timeEl.textContent = formatTimeStr(pendingEvent.arrive);
+    }
+
+    // Sync hidden date input
+    panel.querySelector('#eventArriveDateInput').value = formatInputDate(pendingEvent.arrive);
+}
+
+function updateDepartDisplay() {
+    if (!pendingEvent) return;
+    const panel = CalendarState.eventPanel;
+    const dateEl = panel.querySelector('#eventDepartDate');
+    const timeEl = panel.querySelector('#eventDepartTime');
+    const isEstimated = pendingEvent.estimated.includes('depart');
+
+    if (!pendingEvent.depart) {
+        dateEl.textContent = 'Not set';
+        dateEl.classList.add('event-field-empty');
+        timeEl.textContent = '';
+    } else {
+        dateEl.classList.remove('event-field-empty');
+        if (isEstimated) {
+            dateEl.innerHTML = `<span class="event-field-estimated">~${formatDateStr(pendingEvent.depart)}</span>`;
+            timeEl.innerHTML = `<span class="event-field-estimated">~${formatTimeStr(pendingEvent.depart)}</span>`;
+        } else {
+            dateEl.textContent = formatDateStr(pendingEvent.depart);
+            timeEl.textContent = formatTimeStr(pendingEvent.depart);
+        }
+        // Sync hidden date input
+        panel.querySelector('#eventDepartDateInput').value = formatInputDate(pendingEvent.depart);
+    }
+}
+
 function openEventPanel(date) {
     const { eventPanel, eventBackdrop } = CalendarState;
 
-    // Initialize pending event with noon default
+    // Initialize pending event with noon arrival, end-of-day departure (both estimated)
     const arriveDate = new Date(date);
     arriveDate.setHours(12, 0, 0, 0);
+    const departDate = new Date(date);
+    departDate.setHours(23, 0, 0, 0);
     pendingEvent = {
         arrive: arriveDate,
         location: null,
-        depart: null,
-        estimated: ['arrive'],
+        depart: departDate,
+        estimated: ['arrive', 'depart'],
     };
 
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    const dateStr = `${dayNames[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-
-    const arriveEl = eventPanel.querySelector('#eventArrive');
-    arriveEl.innerHTML = `${dateStr} <span class="event-field-estimated">~12:00 PM</span>`;
+    // Update displays
+    updateArriveDisplay();
+    updateDepartDisplay();
 
     // Reset location
     const locValue = eventPanel.querySelector('#eventLocationValue');
@@ -1031,11 +1250,6 @@ function openEventPanel(date) {
 
     // Reset title
     eventPanel.querySelector('#eventTripName').textContent = 'New Trip';
-
-    // Reset departure
-    const depart = eventPanel.querySelector('#eventDepart');
-    depart.textContent = 'Not set';
-    depart.classList.add('event-field-empty');
 
     // Reset save button
     eventPanel.querySelector('#eventSaveBtn').disabled = true;
@@ -1047,13 +1261,13 @@ function openEventPanel(date) {
     eventPanel.classList.add('open');
 }
 
+function toISO(d) {
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 function saveEvent() {
     if (!pendingEvent || !pendingEvent.location) return;
-
-    // Build ISO string for arrive
-    const d = pendingEvent.arrive;
-    const pad = (n) => String(n).padStart(2, '0');
-    const arriveISO = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
     // Generate unique id
     const maxId = CALENDAR_DATA.events.reduce((max, e) => {
@@ -1066,8 +1280,8 @@ function saveEvent() {
     const newEvent = {
         id: newId,
         location: pendingEvent.location,
-        arrive: arriveISO,
-        depart: pendingEvent.depart || null,
+        arrive: toISO(pendingEvent.arrive),
+        depart: pendingEvent.depart ? toISO(pendingEvent.depart) : null,
         estimated: pendingEvent.estimated,
     };
     CALENDAR_DATA.events.push(newEvent);
@@ -1094,6 +1308,7 @@ function refreshCalendar() {
 }
 
 function closeEventPanel() {
+    closeAllTimePickers();
     CalendarState.eventBackdrop.classList.remove('open');
     CalendarState.eventPanel.classList.remove('open');
     pendingEvent = null;
