@@ -99,6 +99,7 @@ const DataProvider = {
             arrive: parseTimestamp(e.arrive),
             depart: e.depart ? parseTimestamp(e.depart) : null,
             travel: e.travel || null,
+            estimated: e.estimated || [],
         })).sort((a, b) => a.arrive - b.arrive);
 
         // Validate
@@ -161,6 +162,7 @@ const DataProvider = {
                     location: e.location,
                     start: e.arrive,
                     end: stayEnd,
+                    estimated: e.estimated,
                 });
             }
         }
@@ -329,8 +331,12 @@ function renderSegment(container, start, end, className, additionalClasses, clip
 function renderStays(container, stays, clipStart, clipEnd) {
     stays.forEach(stay => {
         if (stay.end <= clipStart || stay.start >= clipEnd) return;
+        const classes = [`location-${stay.location}`];
+        if (stay.estimated && stay.estimated.length > 0) {
+            classes.push('estimated-segment');
+        }
         renderSegment(container, stay.start, stay.end,
-            'continuous-fill', [`location-${stay.location}`], clipStart, clipEnd);
+            'continuous-fill', classes, clipStart, clipEnd);
     });
 }
 
@@ -904,25 +910,25 @@ function createEventPanel() {
     panel.innerHTML = `
         <div class="trip-panel-handle"></div>
         <div class="event-panel-header">
-            <div class="event-panel-title">New Event</div>
+            <div class="event-panel-title"><span id="eventTripName">New Trip</span><svg class="event-title-edit" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg></div>
             <button class="trip-panel-close" id="eventPanelClose">&times;</button>
         </div>
         <div class="event-panel-body">
-            <div class="event-field">
-                <div class="event-field-label">Arrive</div>
-                <div class="event-field-value" id="eventArriveDate"></div>
+            <div class="event-field event-field-add">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/></svg>
+                <span>Add Transportation</span>
             </div>
             <div class="event-field">
-                <div class="event-field-label">Depart</div>
-                <div class="event-field-value event-field-empty">Not set</div>
+                <div class="event-field-label">Arrival</div>
+                <div class="event-field-value" id="eventArrive"></div>
             </div>
             <div class="event-field">
                 <div class="event-field-label">Location</div>
                 <div class="event-field-value event-field-empty">Tap to set destination</div>
             </div>
             <div class="event-field">
-                <div class="event-field-label">Travel</div>
-                <div class="event-field-value event-field-empty">No travel details</div>
+                <div class="event-field-label">Departure</div>
+                <div class="event-field-value event-field-empty" id="eventDepart">Not set</div>
             </div>
         </div>
     `;
@@ -944,7 +950,13 @@ function openEventPanel(date) {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     const dateStr = `${days[date.getDay()]}, ${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
 
-    eventPanel.querySelector('#eventArriveDate').textContent = dateStr;
+    const arriveEl = eventPanel.querySelector('#eventArrive');
+    arriveEl.innerHTML = `${dateStr} <span class="event-field-estimated">~12:00 PM</span>`;
+
+    // Reset departure to empty state
+    const depart = eventPanel.querySelector('#eventDepart');
+    depart.textContent = 'Not set';
+    depart.classList.add('event-field-empty');
 
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');

@@ -97,6 +97,19 @@ body {
     z-index: 1;
 }
 
+.estimated-segment {
+    opacity: 0.55;
+    background-image: repeating-linear-gradient(
+        -45deg,
+        transparent,
+        transparent 4px,
+        rgba(255, 255, 255, 0.08) 4px,
+        rgba(255, 255, 255, 0.08) 8px
+    ) !important;
+    background-color: var(--fill-color, #4A90E2);
+    background-blend-mode: overlay;
+}
+
 @keyframes travel-animation {
     0% {
         background-position: 0 0, 0 0;
@@ -416,6 +429,19 @@ body {
     font-size: 15px;
     font-weight: 600;
     color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.event-title-edit {
+    color: #666;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.event-title-edit:hover {
+    color: #aaa;
 }
 
 .event-panel-body {
@@ -448,4 +474,22 @@ body {
 .event-field-empty {
     color: #555;
     font-style: italic;
+}
+
+.event-field-estimated {
+    color: #b08840;
+    border-bottom: 1px dashed #b08840;
+}
+
+.event-field-add {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #888;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.event-field-add:hover {
+    color: #bbb;
 }
