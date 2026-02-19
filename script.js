@@ -53,8 +53,10 @@ const CalendarState = {
     chunks: new Map(),
 
     // Parsed data
-    trips: [],
-    stays: [],
+    events: [],      // sorted parsed events
+    stays: [],       // derived stay segments
+    travel: [],      // derived travel segments
+    gaps: [],        // derived gap periods (undefined)
     locations: [],
     locationMap: {},
     fadeHours: 48,
@@ -69,7 +71,7 @@ const CalendarState = {
 // ============================================================
 const DataProvider = {
     _data: null,
-    _derived: null, // cached derived trips/stays
+    _derived: null,
 
     init() {
         this._data = CALENDAR_DATA;
@@ -84,66 +86,99 @@ const DataProvider = {
         return this._data.config;
     },
 
-    getInitialLocation() {
-        const il = this._data.initialLocation;
-        return { name: il.name, at: parseTimestamp(il.at) };
-    },
-
-    // Derive from/arrive/stays from minimal trip data
     _derive() {
         if (this._derived) return this._derived;
 
-        const il = this.getInitialLocation();
-        const rawTrips = this._data.trips;
-        const trips = [];
-        const stays = [];
+        // Parse and sort events by arrive time
+        const events = this._data.events.map(e => ({
+            id: e.id,
+            location: e.location,
+            arrive: parseTimestamp(e.arrive),
+            depart: e.depart ? parseTimestamp(e.depart) : null,
+            travel: e.travel || null,
+        })).sort((a, b) => a.arrive - b.arrive);
 
-        let currentLocation = il.name;
-        let currentTime = il.at;
+        // Validate
+        for (let i = 0; i < events.length; i++) {
+            const e = events[i];
+            if (e.depart !== null && e.depart < e.arrive) {
+                console.warn(`Event ${e.id}: depart before arrive`);
+            }
+            if (i > 0) {
+                const prev = events[i - 1];
+                const prevEnd = prev.depart || prev.arrive;
+                // Check travel doesn't overlap previous event
+                let thisStart = e.arrive;
+                if (e.travel && e.travel.legs && e.travel.legs.length > 0) {
+                    const travelDuration = e.travel.legs.reduce((s, l) => s + l.duration, 0) * 60 * 1000;
+                    thisStart = e.arrive - travelDuration;
+                }
+                if (thisStart < prevEnd) {
+                    console.warn(`Event ${e.id}: overlaps with ${prev.id}`);
+                }
+            }
+        }
 
-        for (let i = 0; i < rawTrips.length; i++) {
-            const raw = rawTrips[i];
-            const depart = parseTimestamp(raw.depart);
-            const totalMinutes = raw.legs.reduce((sum, leg) => sum + leg.duration, 0);
-            const arrive = depart + totalMinutes * 60 * 1000;
-
-            // Stay at current location: from currentTime to this trip's departure
-            if (depart > currentTime) {
-                stays.push({
-                    location: currentLocation,
-                    start: currentTime,
-                    end: depart
+        // Build travel segments
+        const travel = [];
+        events.forEach(e => {
+            if (e.travel && e.travel.legs && e.travel.legs.length > 0) {
+                const totalMin = e.travel.legs.reduce((s, l) => s + l.duration, 0);
+                const travelStart = e.arrive - totalMin * 60 * 1000;
+                travel.push({
+                    eventId: e.id,
+                    start: travelStart,
+                    end: e.arrive,
+                    location: e.location,
+                    legs: e.travel.legs,
                 });
             }
+        });
 
-            // The trip itself with derived fields
-            trips.push({
-                from: currentLocation,
-                to: raw.to,
-                depart,
-                arrive,
-                legs: raw.legs,
-                stay: raw.stay || {}
-            });
+        // Build stays: each event → a stay from arrive to effective end
+        const stays = [];
+        for (let i = 0; i < events.length; i++) {
+            const e = events[i];
+            let stayEnd;
 
-            currentLocation = raw.to;
-            currentTime = arrive;
+            if (e.depart !== null) {
+                stayEnd = e.depart;
+            } else if (i < events.length - 1) {
+                // Extend to next event's travel start or arrive
+                const next = events[i + 1];
+                const nextTravel = travel.find(t => t.eventId === next.id);
+                stayEnd = nextTravel ? nextTravel.start : next.arrive;
+            } else {
+                // Last event with no depart: zero-length (fade-out starts from arrive)
+                stayEnd = e.arrive;
+            }
+
+            if (stayEnd > e.arrive) {
+                stays.push({
+                    location: e.location,
+                    start: e.arrive,
+                    end: stayEnd,
+                });
+            }
         }
 
-        // Last stay: zero-length at final destination (fade-out starts from arrive)
-        if (rawTrips.length > 0) {
-            stays.push({
-                location: currentLocation,
-                start: currentTime,
-                end: currentTime
-            });
+        // Build gaps: undefined periods between events
+        const gaps = [];
+        for (let i = 0; i < events.length - 1; i++) {
+            const e = events[i];
+            const next = events[i + 1];
+            const gapStart = e.depart || e.arrive;
+            const nextTravel = travel.find(t => t.eventId === next.id);
+            const gapEnd = nextTravel ? nextTravel.start : next.arrive;
+            if (gapEnd > gapStart) {
+                gaps.push({ start: gapStart, end: gapEnd });
+            }
         }
 
-        this._derived = { trips, stays };
+        this._derived = { events, stays, travel, gaps };
         return this._derived;
     },
 
-    // Get ALL trips and stays
     loadAll() {
         return this._derive();
     }
@@ -286,51 +321,64 @@ function renderStays(container, stays, clipStart, clipEnd) {
     });
 }
 
-// Render trip segments for a time range
-function renderTrips(container, trips, clipStart, clipEnd) {
-    trips.forEach(trip => {
-        if (trip.arrive <= clipStart || trip.depart >= clipEnd) return;
-        renderSegment(container, trip.depart, trip.arrive,
+// Render travel segments for a time range
+function renderTravel(container, travel, clipStart, clipEnd) {
+    travel.forEach(t => {
+        if (t.end <= clipStart || t.start >= clipEnd) return;
+        renderSegment(container, t.start, t.end,
             'continuous-fill', ['travel-segment'], clipStart, clipEnd);
     });
 }
 
-// Render undefined periods (before fade-in, after fade-out)
+// Render undefined periods (before first event, after last event, and gaps between events)
 function renderUndefined(container, clipStart, clipEnd) {
-    const { stays, trips, fadeHours } = CalendarState;
+    const { events, gaps, fadeHours } = CalendarState;
     const fadeDuration = fadeHours * 60 * 60 * 1000;
-    const il = DataProvider.getInitialLocation();
 
-    if (stays.length === 0 && trips.length === 0) {
+    if (events.length === 0) {
         renderSegment(container, clipStart, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
         return;
     }
 
-    // Before: undefined ends where fade-in starts (48h before initialLocation.at)
-    const fadeInStart = il.at - fadeDuration;
+    // Before first event (minus fade-in zone)
+    const firstEvent = events[0];
+    const firstTravelStart = CalendarState.travel.length > 0 && CalendarState.travel[0].eventId === firstEvent.id
+        ? CalendarState.travel[0].start : firstEvent.arrive;
+    const fadeInStart = firstTravelStart - fadeDuration;
 
     if (clipStart < fadeInStart) {
         renderSegment(container, clipStart, fadeInStart,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
-    // After: undefined starts where fade-out ends (48h after last stay end)
-    const lastStay = stays[stays.length - 1];
-    const fadeOutEnd = lastStay.end + fadeDuration;
+    // After last event (plus fade-out zone)
+    const lastEvent = events[events.length - 1];
+    const lastEnd = lastEvent.depart || lastEvent.arrive;
+    const fadeOutEnd = lastEnd + fadeDuration;
 
     if (clipEnd > fadeOutEnd) {
         renderSegment(container, fadeOutEnd, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
+
+    // Gaps between events
+    gaps.forEach(gap => {
+        if (gap.end <= clipStart || gap.start >= clipEnd) return;
+        renderSegment(container, gap.start, gap.end,
+            'continuous-fill', ['location-undefined'], clipStart, clipEnd);
+    });
 }
 
-// Render fade-in gradient before initial location
+// Render fade-in gradient before first event
 function renderFadeIn(container, clipStart, clipEnd) {
-    const { fadeHours } = CalendarState;
-    const il = DataProvider.getInitialLocation();
+    const { events, fadeHours } = CalendarState;
+    if (events.length === 0) return;
 
-    const fadeInEnd = il.at;
+    const firstEvent = events[0];
+    // Fade into the first event's travel start or arrive
+    const firstTravel = CalendarState.travel.find(t => t.eventId === firstEvent.id);
+    const fadeInEnd = firstTravel ? firstTravel.start : firstEvent.arrive;
     const fadeInStart = fadeInEnd - (fadeHours * 60 * 60 * 1000);
     const fadeInDuration = fadeInEnd - fadeInStart;
 
@@ -340,7 +388,7 @@ function renderFadeIn(container, clipStart, clipEnd) {
     const clippedEnd = Math.min(fadeInEnd, clipEnd);
     const startPos = getGridPosition(clippedStart);
     const endPos = getGridPosition(clippedEnd);
-    const locColor = getLocationColor(il.name);
+    const locColor = getLocationColor(firstEvent.location);
     const grayColor = '#3a3a3a';
 
     for (let row = startPos.row; row <= endPos.row; row++) {
@@ -373,13 +421,13 @@ function renderFadeIn(container, clipStart, clipEnd) {
     }
 }
 
-// Render fade-out gradient after last stay
+// Render fade-out gradient after last event
 function renderFadeOut(container, clipStart, clipEnd) {
-    const { stays, fadeHours } = CalendarState;
-    if (stays.length === 0) return;
+    const { events, fadeHours } = CalendarState;
+    if (events.length === 0) return;
 
-    const lastStay = stays[stays.length - 1];
-    const fadeOutStart = lastStay.end;
+    const lastEvent = events[events.length - 1];
+    const fadeOutStart = lastEvent.depart || lastEvent.arrive;
     const fadeOutEnd = fadeOutStart + (fadeHours * 60 * 60 * 1000);
     const fadeOutDuration = fadeOutEnd - fadeOutStart;
 
@@ -389,7 +437,7 @@ function renderFadeOut(container, clipStart, clipEnd) {
     const clippedEnd = Math.min(fadeOutEnd, clipEnd);
     const startPos = getGridPosition(clippedStart);
     const endPos = getGridPosition(clippedEnd);
-    const locColor = getLocationColor(lastStay.location);
+    const locColor = getLocationColor(lastEvent.location);
     const grayColor = '#3a3a3a';
 
     for (let row = startPos.row; row <= endPos.row; row++) {
@@ -457,15 +505,15 @@ function renderLabels(container, stays, clipStart, clipEnd) {
     });
 }
 
-// Render trip icons for a time range
-function renderTripIcons(container, trips, clipStart, clipEnd) {
-    trips.forEach(trip => {
-        if (trip.arrive <= clipStart || trip.depart >= clipEnd) return;
+// Render travel icons for a time range
+function renderTravelIcons(container, travel, clipStart, clipEnd) {
+    travel.forEach(t => {
+        if (t.end <= clipStart || t.start >= clipEnd) return;
 
-        const tripCenter = (trip.depart + trip.arrive) / 2;
-        if (tripCenter < clipStart || tripCenter >= clipEnd) return;
+        const center = (t.start + t.end) / 2;
+        if (center < clipStart || center >= clipEnd) return;
 
-        const centerPos = getGridPosition(tripCenter);
+        const centerPos = getGridPosition(center);
 
         const icon = document.createElement('div');
         icon.className = 'travel-icon';
@@ -475,7 +523,7 @@ function renderTripIcons(container, trips, clipStart, clipEnd) {
         icon.style.top = (rowToY(centerPos.row) + CELL_SIZE / 2) + 'px';
         icon.addEventListener('click', (e) => {
             e.stopPropagation();
-            openTripPanel(trip);
+            openTravelPanel(t);
         });
 
         container.appendChild(icon);
@@ -507,15 +555,15 @@ function renderChunk(chunkIndex) {
         fragment.appendChild(bg);
     }
 
-    // Render layers in z-order: undefined → fades → stays → trips → labels → day cells → icons
+    // Render layers in z-order: undefined → fades → stays → travel → labels → day cells → icons
     renderUndefined(fragment, chunkStartTime, chunkEndTime);
     renderFadeIn(fragment, chunkStartTime, chunkEndTime);
     renderFadeOut(fragment, chunkStartTime, chunkEndTime);
     renderStays(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
-    renderTrips(fragment, CalendarState.trips, chunkStartTime, chunkEndTime);
+    renderTravel(fragment, CalendarState.travel, chunkStartTime, chunkEndTime);
     renderLabels(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
     renderDayCells(fragment, startDayIndex, CHUNK_DAYS);
-    renderTripIcons(fragment, CalendarState.trips, chunkStartTime, chunkEndTime);
+    renderTravelIcons(fragment, CalendarState.travel, chunkStartTime, chunkEndTime);
 
     // Wrap in a container div for easy removal
     const chunkEl = document.createElement('div');
@@ -754,28 +802,26 @@ function getLocationLabel(name) {
     return loc ? loc.label : name.charAt(0).toUpperCase() + name.slice(1);
 }
 
-function openTripPanel(trip) {
+function openTravelPanel(travelSeg) {
     const { tripPanel, tripBackdrop } = CalendarState;
 
-    // Header: from → to with color dots
+    // Header: → destination with color dot
     const routeEl = tripPanel.querySelector('#tripPanelRoute');
     routeEl.innerHTML = `
-        <span class="route-dot" style="background: ${getLocationColor(trip.from)}"></span>
-        ${getLocationLabel(trip.from)}
         <span class="route-arrow">→</span>
-        <span class="route-dot" style="background: ${getLocationColor(trip.to)}"></span>
-        ${getLocationLabel(trip.to)}
+        <span class="route-dot" style="background: ${getLocationColor(travelSeg.location)}"></span>
+        ${getLocationLabel(travelSeg.location)}
     `;
 
     // Time subtitle
     const timeEl = tripPanel.querySelector('#tripPanelTime');
-    timeEl.textContent = `${formatTime(trip.depart)}  →  ${formatTime(trip.arrive)}`;
+    timeEl.textContent = `${formatTime(travelSeg.start)}  →  ${formatTime(travelSeg.end)}`;
 
     // Build leg timeline
     const legsEl = tripPanel.querySelector('#tripPanelLegs');
     legsEl.innerHTML = '';
 
-    trip.legs.forEach(leg => {
+    travelSeg.legs.forEach(leg => {
         const mode = transportModes[leg.mode] || { icon: '📍', label: leg.mode };
         const legEl = document.createElement('div');
         legEl.className = 'trip-leg';
@@ -807,11 +853,13 @@ function initCalendar() {
 
     const config = DataProvider.getConfig();
     const locations = DataProvider.getLocations();
-    const { trips, stays } = DataProvider.loadAll();
+    const { events, stays, travel, gaps } = DataProvider.loadAll();
 
     // Populate state
-    CalendarState.trips = trips;
+    CalendarState.events = events;
     CalendarState.stays = stays;
+    CalendarState.travel = travel;
+    CalendarState.gaps = gaps;
     CalendarState.locations = locations;
     CalendarState.locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
     CalendarState.fadeHours = config.fadeHours;
