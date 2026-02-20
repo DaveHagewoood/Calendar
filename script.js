@@ -75,9 +75,28 @@ const DataProvider = {
     _data: null,
     _derived: null,
 
-    init() {
-        this._data = CALENDAR_DATA;
+    async init() {
+        const { binId, masterKey, baseUrl } = JSONBIN_CONFIG;
+        const res = await fetch(`${baseUrl}/${binId}/latest`, {
+            headers: { 'X-Master-Key': masterKey }
+        });
+        if (!res.ok) throw new Error(`Failed to load data: ${res.status}`);
+        const json = await res.json();
+        this._data = json.record;
         this._derived = null;
+    },
+
+    async save() {
+        const { binId, masterKey, baseUrl } = JSONBIN_CONFIG;
+        const res = await fetch(`${baseUrl}/${binId}`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Master-Key': masterKey
+            },
+            body: JSON.stringify(this._data)
+        });
+        if (!res.ok) throw new Error(`Failed to save data: ${res.status}`);
     },
 
     getLocations() {
@@ -1335,11 +1354,11 @@ function toISO(d) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function saveEvent() {
+async function saveEvent() {
     if (!pendingEvent || !pendingEvent.location) return;
 
     // Generate unique id
-    const maxId = CALENDAR_DATA.events.reduce((max, e) => {
+    const maxId = DataProvider._data.events.reduce((max, e) => {
         const num = parseInt(e.id.replace('evt-', ''), 10);
         return num > max ? num : max;
     }, 0);
@@ -1356,11 +1375,18 @@ function saveEvent() {
     if (pendingEvent.travel && pendingEvent.travel.legs.length > 0) {
         newEvent.travel = pendingEvent.travel;
     }
-    CALENDAR_DATA.events.push(newEvent);
+    DataProvider._data.events.push(newEvent);
 
-    // Re-derive and re-render
+    // Re-derive and re-render locally
     refreshCalendar();
     closeEventPanel();
+
+    // Persist to remote
+    try {
+        await DataProvider.save();
+    } catch (err) {
+        console.error('Failed to save to remote:', err);
+    }
 }
 
 function refreshCalendar() {
@@ -1389,8 +1415,8 @@ function closeEventPanel() {
 // ============================================================
 // Initialize
 // ============================================================
-function initCalendar() {
-    DataProvider.init();
+async function initCalendar() {
+    await DataProvider.init();
 
     const locations = DataProvider.getLocations();
     const { events, stays, travel, gaps } = DataProvider.loadAll();
