@@ -1,7 +1,8 @@
 // ============================================================
 // Constants
 // ============================================================
-const CELL_SIZE = 375 / 7;           // ~53.57px, square cells
+let CELL_SIZE = 375 / 7;             // recalculated from container width on init
+let CONTAINER_WIDTH = 375;           // recalculated on init
 const CHUNK_WEEKS = 4;               // Weeks per chunk
 const CHUNK_DAYS = CHUNK_WEEKS * 7;  // Days per chunk
 const BUFFER_PX = 600;               // Extend when this close to edge
@@ -495,7 +496,7 @@ function renderChunk(chunkIndex) {
     const bgStartRow = startWeek;
     for (let w = 0; w < CHUNK_WEEKS; w++) {
         const row = startWeek + w;
-        const bg = createPositionedDiv('chunk-bg', 0, rowToY(row), 375, CELL_SIZE);
+        const bg = createPositionedDiv('chunk-bg', 0, rowToY(row), CONTAINER_WIDTH, CELL_SIZE);
         fragment.appendChild(bg);
     }
 
@@ -1416,6 +1417,11 @@ function closeEventPanel() {
 // Initialize
 // ============================================================
 async function initCalendar() {
+    // Compute cell size from actual container width
+    const container = document.querySelector('.mobile-container');
+    CONTAINER_WIDTH = container.clientWidth;
+    CELL_SIZE = CONTAINER_WIDTH / 7;
+
     await DataProvider.init();
 
     const locations = DataProvider.getLocations();

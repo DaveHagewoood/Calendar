@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="80" fill="#1a1a2e"/>
+  <rect x="56" y="120" width="400" height="336" rx="24" fill="#16213e"/>
+  <rect x="56" y="120" width="400" height="80" rx="24" fill="#0f3460"/>
+  <rect x="56" y="176" width="400" height="24" fill="#0f3460"/>
+  <!-- Calendar grid hint -->
+  <line x1="113" y1="200" x2="113" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <line x1="170" y1="200" x2="170" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <line x1="227" y1="200" x2="227" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <line x1="284" y1="200" x2="284" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <line x1="341" y1="200" x2="341" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <line x1="398" y1="200" x2="398" y2="456" stroke="#1a1a2e" stroke-width="3"/>
+  <!-- Color bars representing stays -->
+  <rect x="170" y="220" width="228" height="32" rx="4" fill="#E8B84D" opacity="0.9"/>
+  <rect x="284" y="268" width="172" height="32" rx="4" fill="#E88D8D" opacity="0.9"/>
+  <rect x="56" y="316" width="285" height="32" rx="4" fill="#E88D8D" opacity="0.9"/>
+  <rect x="113" y="364" width="228" height="32" rx="4" fill="#A78DD8" opacity="0.9"/>
+  <rect x="227" y="412" width="229" height="32" rx="4" fill="#7DD8C0" opacity="0.9"/>
+  <!-- Calendar hooks -->
+  <rect x="140" y="88" width="20" height="64" rx="10" fill="#e0e0e0"/>
+  <rect x="352" y="88" width="20" height="64" rx="10" fill="#e0e0e0"/>
+</svg>

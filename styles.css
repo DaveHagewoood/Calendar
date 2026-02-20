@@ -7,21 +7,37 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
     background: #1a1a1a;
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-height: 100vh;
-    padding: 20px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
 }
 
+/* Mobile: full screen */
 .mobile-container {
-    width: 375px;
-    height: 812px;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh; /* dynamic viewport height for mobile browsers */
     background: #1a1a1a;
-    border-radius: 20px;
-    box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
     overflow: hidden;
     position: relative;
+}
+
+/* Desktop: simulated phone frame */
+@media (min-width: 600px) {
+    body {
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 100vh;
+        padding: 20px;
+    }
+
+    .mobile-container {
+        width: 375px;
+        height: 812px;
+        border-radius: 20px;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    }
 }
 
 .calendar-viewport {
@@ -41,14 +57,14 @@ body {
 
 .calendar-canvas {
     position: relative;
-    width: 375px;
+    width: 100%;
 }
 
 .chunk {
     position: absolute;
     top: 0;
     left: 0;
-    width: 375px;
+    width: 100%;
     pointer-events: none;
 }
 
