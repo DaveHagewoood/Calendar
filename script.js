@@ -59,7 +59,6 @@ const CalendarState = {
     gaps: [],        // derived gap periods (undefined)
     locations: [],
     locationMap: {},
-    fadeHours: 48,
 
     // Interaction state
     wasDrag: false,
@@ -360,8 +359,7 @@ function renderTravel(container, travel, clipStart, clipEnd) {
 
 // Render undefined periods (before first event, after last event, and gaps between events)
 function renderUndefined(container, clipStart, clipEnd) {
-    const { events, gaps, fadeHours } = CalendarState;
-    const fadeDuration = fadeHours * 60 * 60 * 1000;
+    const { events, gaps } = CalendarState;
 
     if (events.length === 0) {
         renderSegment(container, clipStart, clipEnd,
@@ -369,14 +367,13 @@ function renderUndefined(container, clipStart, clipEnd) {
         return;
     }
 
-    // Before first event (minus fade-in zone)
+    // Before first event
     const firstEvent = events[0];
     const firstTravelStart = CalendarState.travel.length > 0 && CalendarState.travel[0].eventId === firstEvent.id
         ? CalendarState.travel[0].start : firstEvent.arrive;
-    const fadeInStart = firstTravelStart - fadeDuration;
 
-    if (clipStart < fadeInStart) {
-        renderSegment(container, clipStart, fadeInStart,
+    if (clipStart < firstTravelStart) {
+        renderSegment(container, clipStart, firstTravelStart,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
@@ -384,11 +381,9 @@ function renderUndefined(container, clipStart, clipEnd) {
     const lastEvent = events[events.length - 1];
     const lastStay = CalendarState.stays.find(s => s.start === lastEvent.arrive);
     const lastEnd = lastStay ? lastStay.end : lastEvent.arrive;
-    const hasConfirmedDepart = lastEvent.depart !== null && !lastEvent.estimated.includes('depart');
-    const undefinedStart = hasConfirmedDepart ? lastEnd + fadeDuration : lastEnd;
 
-    if (clipEnd > undefinedStart) {
-        renderSegment(container, undefinedStart, clipEnd,
+    if (clipEnd > lastEnd) {
+        renderSegment(container, lastEnd, clipEnd,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     }
 
@@ -398,108 +393,6 @@ function renderUndefined(container, clipStart, clipEnd) {
         renderSegment(container, gap.start, gap.end,
             'continuous-fill', ['location-undefined'], clipStart, clipEnd);
     });
-}
-
-// Render fade-in gradient before first event
-function renderFadeIn(container, clipStart, clipEnd) {
-    const { events, fadeHours } = CalendarState;
-    if (events.length === 0) return;
-
-    const firstEvent = events[0];
-    // Fade into the first event's travel start or arrive
-    const firstTravel = CalendarState.travel.find(t => t.eventId === firstEvent.id);
-    const fadeInEnd = firstTravel ? firstTravel.start : firstEvent.arrive;
-    const fadeInStart = fadeInEnd - (fadeHours * 60 * 60 * 1000);
-    const fadeInDuration = fadeInEnd - fadeInStart;
-
-    if (fadeInEnd <= clipStart || fadeInStart >= clipEnd) return;
-
-    const clippedStart = Math.max(fadeInStart, clipStart);
-    const clippedEnd = Math.min(fadeInEnd, clipEnd);
-    const startPos = getGridPosition(clippedStart);
-    const endPos = getGridPosition(clippedEnd);
-    const locColor = getLocationColor(firstEvent.location);
-    const grayColor = '#3a3a3a';
-
-    for (let row = startPos.row; row <= endPos.row; row++) {
-        const isFirstRow = (row === startPos.row);
-        const isLastRow = (row === endPos.row);
-
-        const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
-        const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
-
-        const left = colToX(startCol);
-        const width = (endCol - startCol) * CELL_SIZE;
-        const top = rowToY(row);
-
-        const seg = createPositionedDiv('continuous-fill',
-            left, top, width, CELL_SIZE);
-
-        const segStartTime = isFirstRow ? clippedStart : weekToTimestamp(row);
-        const segEndTime = isLastRow ? clippedEnd : weekToTimestamp(row + 1);
-
-        // t=0 is gray, t=1 is full location color
-        const tStart = Math.max(0, (segStartTime - fadeInStart) / fadeInDuration);
-        const tEnd = Math.min(1, (segEndTime - fadeInStart) / fadeInDuration);
-
-        const colorStart = lerpColor(grayColor, locColor, tStart);
-        const colorEnd = lerpColor(grayColor, locColor, tEnd);
-
-        seg.style.background = `linear-gradient(to right, ${colorStart}, ${colorEnd})`;
-        seg.style.opacity = '0.85';
-        container.appendChild(seg);
-    }
-}
-
-// Render fade-out gradient after last event (only if depart is confirmed)
-function renderFadeOut(container, clipStart, clipEnd) {
-    const { events, fadeHours } = CalendarState;
-    if (events.length === 0) return;
-
-    const lastEvent = events[events.length - 1];
-    // Don't fade out from estimated/missing depart — the stay just ends
-    if (lastEvent.depart === null || lastEvent.estimated.includes('depart')) return;
-    const fadeOutStart = lastEvent.depart;
-    const fadeOutEnd = fadeOutStart + (fadeHours * 60 * 60 * 1000);
-    const fadeOutDuration = fadeOutEnd - fadeOutStart;
-
-    if (fadeOutDuration <= 0 || fadeOutEnd <= clipStart || fadeOutStart >= clipEnd) return;
-
-    const clippedStart = Math.max(fadeOutStart, clipStart);
-    const clippedEnd = Math.min(fadeOutEnd, clipEnd);
-    const startPos = getGridPosition(clippedStart);
-    const endPos = getGridPosition(clippedEnd);
-    const locColor = getLocationColor(lastEvent.location);
-    const grayColor = '#3a3a3a';
-
-    for (let row = startPos.row; row <= endPos.row; row++) {
-        const isFirstRow = (row === startPos.row);
-        const isLastRow = (row === endPos.row);
-
-        const startCol = isFirstRow ? startPos.col + startPos.dayFraction : 0;
-        const endCol = isLastRow ? endPos.col + endPos.dayFraction : 7;
-
-        const left = colToX(startCol);
-        const width = (endCol - startCol) * CELL_SIZE;
-        const top = rowToY(row);
-
-        const seg = createPositionedDiv('continuous-fill',
-            left, top, width, CELL_SIZE);
-
-        const segStartTime = isFirstRow ? clippedStart : weekToTimestamp(row);
-        const segEndTime = isLastRow ? clippedEnd : weekToTimestamp(row + 1);
-
-        // t=0 is full location color, t=1 is gray
-        const tStart = Math.max(0, (segStartTime - fadeOutStart) / fadeOutDuration);
-        const tEnd = Math.min(1, (segEndTime - fadeOutStart) / fadeOutDuration);
-
-        const colorStart = lerpColor(locColor, grayColor, tStart);
-        const colorEnd = lerpColor(locColor, grayColor, tEnd);
-
-        seg.style.background = `linear-gradient(to right, ${colorStart}, ${colorEnd})`;
-        seg.style.opacity = '0.85';
-        container.appendChild(seg);
-    }
 }
 
 // Render location labels for a time range
@@ -587,10 +480,8 @@ function renderChunk(chunkIndex) {
         fragment.appendChild(bg);
     }
 
-    // Render layers in z-order: undefined → fades → stays → travel → labels → day cells → icons
+    // Render layers in z-order: undefined → stays → travel → labels → day cells → icons
     renderUndefined(fragment, chunkStartTime, chunkEndTime);
-    renderFadeIn(fragment, chunkStartTime, chunkEndTime);
-    renderFadeOut(fragment, chunkStartTime, chunkEndTime);
     renderStays(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
     renderTravel(fragment, CalendarState.travel, chunkStartTime, chunkEndTime);
     renderLabels(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
@@ -815,16 +706,9 @@ function formatTime(timestamp) {
     return `${months[d.getMonth()]} ${d.getDate()}, ${h}:${mins} ${ampm}`;
 }
 
-function lerpColor(hex1, hex2, t) {
-    const r1 = parseInt(hex1.slice(1, 3), 16), g1 = parseInt(hex1.slice(3, 5), 16), b1 = parseInt(hex1.slice(5, 7), 16);
-    const r2 = parseInt(hex2.slice(1, 3), 16), g2 = parseInt(hex2.slice(3, 5), 16), b2 = parseInt(hex2.slice(5, 7), 16);
-    const r = Math.round(r1 + (r2 - r1) * t), g = Math.round(g1 + (g2 - g1) * t), b = Math.round(b1 + (b2 - b1) * t);
-    return `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
-}
-
-// Check if a timestamp falls in an undefined period (not in any stay, travel, or fade)
+// Check if a timestamp falls in an undefined period (not in any stay or travel)
 function isUndefinedTime(timestamp) {
-    const { events, stays, travel } = CalendarState;
+    const { stays, travel } = CalendarState;
     // In a stay?
     for (const s of stays) {
         if (timestamp >= s.start && timestamp < s.end) return false;
@@ -832,21 +716,6 @@ function isUndefinedTime(timestamp) {
     // In travel?
     for (const t of travel) {
         if (timestamp >= t.start && timestamp < t.end) return false;
-    }
-    // In fade-in zone?
-    if (events.length > 0) {
-        const firstTravel = travel.find(t => t.eventId === events[0].id);
-        const fadeInEnd = firstTravel ? firstTravel.start : events[0].arrive;
-        const fadeInStart = fadeInEnd - (CalendarState.fadeHours * 60 * 60 * 1000);
-        if (timestamp >= fadeInStart && timestamp < fadeInEnd) return false;
-
-        // In fade-out zone? (only if last event has confirmed depart)
-        const lastEvent = events[events.length - 1];
-        if (lastEvent.depart !== null && !lastEvent.estimated.includes('depart')) {
-            const fadeOutStart = lastEvent.depart;
-            const fadeOutEnd = fadeOutStart + (CalendarState.fadeHours * 60 * 60 * 1000);
-            if (timestamp >= fadeOutStart && timestamp < fadeOutEnd) return false;
-        }
     }
     return true;
 }
@@ -1523,7 +1392,6 @@ function closeEventPanel() {
 function initCalendar() {
     DataProvider.init();
 
-    const config = DataProvider.getConfig();
     const locations = DataProvider.getLocations();
     const { events, stays, travel, gaps } = DataProvider.loadAll();
 
@@ -1534,7 +1402,6 @@ function initCalendar() {
     CalendarState.gaps = gaps;
     CalendarState.locations = locations;
     CalendarState.locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
-    CalendarState.fadeHours = config.fadeHours;
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
 
