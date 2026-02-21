@@ -39,6 +39,143 @@ function parseTimestamp(isoString) {
 }
 
 // ============================================================
+// Toast Notification System
+// ============================================================
+const ToastManager = {
+    container: null,
+
+    init(parentEl) {
+        this.container = document.createElement('div');
+        this.container.className = 'toast-container';
+        parentEl.appendChild(this.container);
+    },
+
+    show(message, type = 'error', durationMs = 4000) {
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        const icons = { error: '\u26D4', warning: '\u26A0\uFE0F', success: '\u2705', info: '\u2139\uFE0F' };
+        toast.innerHTML = `<span class="toast-icon">${icons[type] || ''}</span><span class="toast-msg">${message}</span>`;
+        toast.addEventListener('click', () => dismiss());
+        this.container.appendChild(toast);
+        // Trigger enter animation
+        requestAnimationFrame(() => toast.classList.add('toast-visible'));
+        const dismiss = () => {
+            toast.classList.remove('toast-visible');
+            toast.addEventListener('transitionend', () => toast.remove(), { once: true });
+            // Fallback removal if transition doesn't fire
+            setTimeout(() => { if (toast.parentNode) toast.remove(); }, 400);
+        };
+        const timer = setTimeout(dismiss, durationMs);
+        return () => { clearTimeout(timer); dismiss(); };
+    }
+};
+
+// ============================================================
+// Validation Engine — extensible rule-based validation
+// ============================================================
+const ValidationEngine = {
+    // Each rule: { id, check(event, existingEvents, mode) → { level: 'error'|'warning', message } | null }
+    // mode is 'create' or 'edit'
+    rules: [
+        {
+            id: 'depart-before-arrive',
+            check(event, _existing, _mode) {
+                if (event.depart && event.arrive && event.depart <= event.arrive) {
+                    return { level: 'error', message: 'Departure must be after arrival' };
+                }
+                return null;
+            }
+        },
+        {
+            id: 'overlap',
+            check(event, existingEvents, mode) {
+                const arriveMs = event.arrive instanceof Date ? event.arrive.getTime() : event.arrive;
+                const departMs = event.depart instanceof Date ? event.depart.getTime() : (event.depart || arriveMs);
+                // Compute travel start
+                let travelStart = arriveMs;
+                if (event.travel && event.travel.legs && event.travel.legs.length > 0) {
+                    const totalMin = event.travel.legs.reduce((sum, l) => sum + (l.duration || EstimationEngine.estimateLegDuration(l)), 0);
+                    travelStart = arriveMs - totalMin * 60000;
+                }
+                const eventStart = Math.min(travelStart, arriveMs);
+                const eventEnd = departMs;
+
+                for (const other of existingEvents) {
+                    // Skip self when editing
+                    if (mode === 'edit' && other.id === event._editingId) continue;
+                    const otherArrive = parseTimestamp(other.arrive);
+                    const otherDepart = other.depart ? parseTimestamp(other.depart) : null;
+                    // Compute other's effective end (depart or EOD)
+                    let otherEnd = otherDepart;
+                    if (!otherEnd) {
+                        const d = new Date(otherArrive);
+                        d.setHours(23, 59, 59, 0);
+                        otherEnd = d.getTime();
+                    }
+                    // Compute other's travel start
+                    let otherStart = otherArrive;
+                    if (other.travel && other.travel.legs) {
+                        const totalMin = other.travel.legs.reduce((sum, l) => sum + (l.duration || 0), 0);
+                        otherStart = otherArrive - totalMin * 60000;
+                    }
+                    const oStart = Math.min(otherStart, otherArrive);
+                    const oEnd = otherEnd;
+
+                    // Check overlap
+                    if (eventStart < oEnd && eventEnd > oStart) {
+                        const loc = CalendarState.locationMap[other.location];
+                        const name = loc ? loc.label : other.location;
+                        return { level: 'error', message: `Overlaps with ${name}` };
+                    }
+                }
+                return null;
+            }
+        }
+    ],
+
+    validate(event, existingEvents, mode = 'create') {
+        const errors = [];
+        const warnings = [];
+        for (const rule of this.rules) {
+            const result = rule.check(event, existingEvents, mode);
+            if (result) {
+                if (result.level === 'error') errors.push(result.message);
+                else warnings.push(result.message);
+            }
+        }
+        return { valid: errors.length === 0, errors, warnings };
+    }
+};
+
+// ============================================================
+// Estimation Engine — extensible auto-estimation for missing data
+// ============================================================
+const EstimationEngine = {
+    // Default duration estimates by transport mode (minutes)
+    modeDurations: {
+        plane: 300,
+        car: 60,
+        taxi: 30,
+        uber: 30,
+        train: 90,
+        boat: 120,
+        ferry: 90,
+        helicopter: 60,
+    },
+
+    estimateLegDuration(leg) {
+        return this.modeDurations[leg.mode] || 60;
+    },
+
+    // Format an estimated duration for display
+    formatEstimatedDuration(leg) {
+        if (leg.duration > 0) return null; // has real duration, no estimate needed
+        const est = this.estimateLegDuration(leg);
+        return `~${formatDuration(est)}`;
+    }
+};
+
+// ============================================================
 // Calendar State
 // ============================================================
 const CalendarState = {
@@ -87,17 +224,54 @@ const DataProvider = {
         this._derived = null;
     },
 
+    _saving: false,
+    _pendingSave: false,
+
     async save() {
-        const { binId, masterKey, baseUrl } = JSONBIN_CONFIG;
-        const res = await fetch(`${baseUrl}/${binId}`, {
-            method: 'PUT',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-Master-Key': masterKey
-            },
-            body: JSON.stringify(this._data)
-        });
-        if (!res.ok) throw new Error(`Failed to save data: ${res.status}`);
+        // Coalesce rapid saves — if already saving, queue one retry
+        if (this._saving) {
+            this._pendingSave = true;
+            return;
+        }
+        this._saving = true;
+
+        const maxRetries = 3;
+        let lastErr;
+        for (let attempt = 0; attempt < maxRetries; attempt++) {
+            try {
+                const { binId, masterKey, baseUrl } = JSONBIN_CONFIG;
+                const res = await fetch(`${baseUrl}/${binId}`, {
+                    method: 'PUT',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Master-Key': masterKey
+                    },
+                    body: JSON.stringify(this._data)
+                });
+                if (res.ok) {
+                    this._saving = false;
+                    // Flush queued save if data changed while we were saving
+                    if (this._pendingSave) {
+                        this._pendingSave = false;
+                        this.save();
+                    }
+                    return;
+                }
+                lastErr = new Error(`HTTP ${res.status}`);
+            } catch (err) {
+                lastErr = err;
+            }
+            // Exponential backoff: 500ms, 1s, 2s
+            if (attempt < maxRetries - 1) {
+                await new Promise(r => setTimeout(r, 500 * Math.pow(2, attempt)));
+            }
+        }
+
+        this._saving = false;
+        if (this._pendingSave) {
+            this._pendingSave = false;
+        }
+        throw lastErr;
     },
 
     getLocations() {
@@ -185,6 +359,7 @@ const DataProvider = {
 
             if (stayEnd > e.arrive) {
                 stays.push({
+                    eventId: e.id,
                     location: e.location,
                     start: e.arrive,
                     end: stayEnd,
@@ -311,12 +486,15 @@ function renderDayCells(container, startDayIndex, numDays) {
         dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
         cell.appendChild(dayNumber);
 
-        // Click handler for undefined days
+        // Click handler: undefined days → new event, stay/travel bars → edit event
         const dayTime = date.getTime();
         cell.addEventListener('click', () => {
             if (CalendarState.wasDrag) return;
             if (isUndefinedTime(dayTime)) {
                 openEventPanel(date);
+            } else {
+                const evt = findEventAtTime(dayTime);
+                if (evt) openEventPanelForEdit(evt);
             }
         });
 
@@ -356,6 +534,19 @@ function renderSegment(container, start, end, className, additionalClasses, clip
 }
 
 // Render stay segments for a time range
+function computeEventCompleteness(rawEvent) {
+    const missing = [];
+    if (!rawEvent.depart) missing.push('departure');
+    if (!rawEvent.travel || !rawEvent.travel.legs || rawEvent.travel.legs.length === 0) missing.push('transportation');
+    if (rawEvent.estimated && rawEvent.estimated.length > 0) {
+        rawEvent.estimated.forEach(f => {
+            if (f === 'arrive') missing.push('arrival time');
+            if (f === 'depart') missing.push('departure time');
+        });
+    }
+    return { complete: missing.length === 0, missing };
+}
+
 function renderStays(container, stays, clipStart, clipEnd) {
     stays.forEach(stay => {
         if (stay.end <= clipStart || stay.start >= clipEnd) return;
@@ -365,6 +556,22 @@ function renderStays(container, stays, clipStart, clipEnd) {
         }
         renderSegment(container, stay.start, stay.end,
             'continuous-fill', classes, clipStart, clipEnd);
+
+        // Completeness badge at the start of the stay (if visible in this chunk)
+        if (stay.eventId && stay.start >= clipStart && stay.start < clipEnd) {
+            const rawEvent = DataProvider._data.events.find(e => e.id === stay.eventId);
+            if (rawEvent) {
+                const { complete } = computeEventCompleteness(rawEvent);
+                if (!complete) {
+                    const pos = getGridPosition(stay.start);
+                    const badge = createPositionedDiv('completeness-badge',
+                        colToX(pos.col + pos.dayFraction) - 3,
+                        rowToY(pos.row) + 2,
+                        8, 8);
+                    container.appendChild(badge);
+                }
+            }
+        }
     });
 }
 
@@ -641,6 +848,42 @@ function handleScroll() {
 
     // Prune if too many chunks
     pruneDistantChunks();
+
+    // Show/hide Today button based on whether today's row is visible
+    updateTodayButtonVisibility();
+}
+
+function createTodayButton(container) {
+    const btn = document.createElement('button');
+    btn.className = 'today-btn';
+    btn.textContent = 'Today';
+    btn.style.display = 'none';
+    btn.addEventListener('click', () => {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayPos = getGridPosition(today.getTime());
+        const todayY = rowToY(todayPos.row);
+        const viewportHeight = CalendarState.viewport.clientHeight;
+        CalendarState.viewport.scrollTo({
+            top: todayY - viewportHeight / 2 + CELL_SIZE / 2,
+            behavior: 'smooth'
+        });
+    });
+    container.appendChild(btn);
+    CalendarState.todayButton = btn;
+}
+
+function updateTodayButtonVisibility() {
+    const btn = CalendarState.todayButton;
+    if (!btn) return;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const todayPos = getGridPosition(today.getTime());
+    const todayY = rowToY(todayPos.row);
+    const scrollTop = CalendarState.viewport.scrollTop;
+    const viewportHeight = CalendarState.viewport.clientHeight;
+    const visible = todayY >= scrollTop && todayY + CELL_SIZE <= scrollTop + viewportHeight;
+    btn.style.display = visible ? 'none' : '';
 }
 
 // ============================================================
@@ -738,6 +981,29 @@ function isUndefinedTime(timestamp) {
         if (timestamp >= t.start && timestamp < t.end) return false;
     }
     return true;
+}
+
+function findEventAtTime(timestamp) {
+    for (const evt of DataProvider._data.events) {
+        const arrive = parseTimestamp(evt.arrive);
+        let depart = evt.depart ? parseTimestamp(evt.depart) : null;
+        if (!depart) {
+            // If no depart, treat as end of arrival day
+            const d = new Date(arrive);
+            d.setHours(23, 59, 59, 0);
+            depart = d.getTime();
+        }
+        // Include travel time
+        let start = arrive;
+        if (evt.travel && evt.travel.legs) {
+            const totalMin = evt.travel.legs.reduce((sum, l) => sum + (l.duration || 0), 0);
+            start = arrive - totalMin * 60000;
+        }
+        if (timestamp >= start && timestamp < depart) {
+            return evt;
+        }
+    }
+    return null;
 }
 
 function getLocationColor(name) {
@@ -838,7 +1104,7 @@ function createEventPanel() {
                     </div>
                 </div>
             </div>
-            <div class="event-field">
+            <div class="event-field" id="eventArriveField">
                 <div class="event-field-label">Arrival</div>
                 <div class="event-field-datetime">
                     <span class="event-field-date event-field-tappable" id="eventArriveDate"></span>
@@ -852,7 +1118,7 @@ function createEventPanel() {
                 <div class="event-field-value event-field-empty" id="eventLocationValue">Tap to set destination</div>
                 <div class="location-picker" id="locationPicker"></div>
             </div>
-            <div class="event-field">
+            <div class="event-field" id="eventDepartField">
                 <div class="event-field-label">Departure</div>
                 <div class="event-field-datetime">
                     <span class="event-field-date event-field-tappable" id="eventDepartDate"></span>
@@ -863,6 +1129,7 @@ function createEventPanel() {
             </div>
         </div>
         <div class="event-panel-footer">
+            <button class="event-delete-btn" id="eventDeleteBtn" style="display:none">Delete Trip</button>
             <button class="event-save-btn" id="eventSaveBtn" disabled>Save Trip</button>
         </div>
     `;
@@ -873,6 +1140,37 @@ function createEventPanel() {
     panel.querySelector('#eventPanelClose').addEventListener('click', closeEventPanel);
     panel.querySelector('#eventLocationField').addEventListener('click', toggleLocationPicker);
     panel.querySelector('#eventSaveBtn').addEventListener('click', saveEvent);
+
+    // Delete button with inline confirmation
+    let deleteConfirmTimer = null;
+    panel.querySelector('#eventDeleteBtn').addEventListener('click', async function() {
+        if (!pendingEvent || !pendingEvent._editingId) return;
+
+        if (this.classList.contains('confirming')) {
+            // Second tap — delete
+            clearTimeout(deleteConfirmTimer);
+            this.classList.remove('confirming');
+            const id = pendingEvent._editingId;
+            DataProvider._data.events = DataProvider._data.events.filter(e => e.id !== id);
+            refreshCalendar();
+            closeEventPanel();
+            try {
+                await DataProvider.save();
+                ToastManager.show('Trip deleted', 'success', 2000);
+            } catch (err) {
+                console.error('Failed to save after delete:', err);
+                ToastManager.show('Deleted locally. Remote sync failed.', 'warning');
+            }
+        } else {
+            // First tap — confirm
+            this.classList.add('confirming');
+            this.textContent = 'Tap again to confirm';
+            deleteConfirmTimer = setTimeout(() => {
+                this.classList.remove('confirming');
+                this.textContent = 'Delete Trip';
+            }, 3000);
+        }
+    });
 
     // Arrival date — native picker; time — custom inline picker
     panel.querySelector('#eventArriveDate').addEventListener('click', () => {
@@ -1031,6 +1329,7 @@ function renderLegsDisplay() {
         const mode = transportModes[leg.mode] || { icon: '📍', label: leg.mode };
         const hasDuration = leg.duration > 0;
         const hasNote = leg.note && leg.note.length > 0;
+        const estimatedDur = EstimationEngine.formatEstimatedDuration(leg);
 
         const el = document.createElement('div');
         el.className = 'leg-item leg-item-tappable';
@@ -1038,7 +1337,7 @@ function renderLegsDisplay() {
             <span class="leg-item-icon">${mode.icon}</span>
             <span class="leg-item-info">
                 <span class="leg-item-note ${hasNote ? '' : 'event-field-empty'}">${hasNote ? leg.note : mode.label}</span>
-                <span class="leg-item-duration ${hasDuration ? '' : 'event-field-estimated'}">${hasDuration ? formatDuration(leg.duration) : '~duration not set'}</span>
+                <span class="leg-item-duration ${hasDuration ? '' : 'event-field-estimated'}">${hasDuration ? formatDuration(leg.duration) : estimatedDur}</span>
             </span>
         `;
         el.addEventListener('click', () => openLegDetail(i));
@@ -1264,6 +1563,42 @@ function formatInputTime(d) {
     return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function validateFieldsInline() {
+    if (!pendingEvent) return;
+    const panel = CalendarState.eventPanel;
+    const arriveField = panel.querySelector('#eventArriveField');
+    const departField = panel.querySelector('#eventDepartField');
+
+    // Clear previous inline errors
+    [arriveField, departField].forEach(field => {
+        field.classList.remove('event-field-error');
+        const existing = field.querySelector('.event-field-error-text');
+        if (existing) existing.remove();
+    });
+
+    // Build a lightweight event object for validation rules
+    const checkEvent = {
+        arrive: pendingEvent.arrive,
+        depart: pendingEvent.depart,
+        travel: pendingEvent.travel,
+        _editingId: pendingEvent._editingId
+    };
+
+    // Run only inline-relevant rules (depart-before-arrive)
+    for (const rule of ValidationEngine.rules) {
+        if (rule.id === 'depart-before-arrive') {
+            const result = rule.check(checkEvent, [], 'create');
+            if (result && result.level === 'error') {
+                departField.classList.add('event-field-error');
+                const errEl = document.createElement('div');
+                errEl.className = 'event-field-error-text';
+                errEl.textContent = result.message;
+                departField.appendChild(errEl);
+            }
+        }
+    }
+}
+
 function updateArriveDisplay() {
     if (!pendingEvent) return;
     const panel = CalendarState.eventPanel;
@@ -1280,6 +1615,7 @@ function updateArriveDisplay() {
 
     // Sync hidden date input
     panel.querySelector('#eventArriveDateInput').value = formatInputDate(pendingEvent.arrive);
+    validateFieldsInline();
 }
 
 function updateDepartDisplay() {
@@ -1305,6 +1641,7 @@ function updateDepartDisplay() {
         // Sync hidden date input
         panel.querySelector('#eventDepartDateInput').value = formatInputDate(pendingEvent.depart);
     }
+    validateFieldsInline();
 }
 
 function openEventPanel(date) {
@@ -1341,9 +1678,77 @@ function openEventPanel(date) {
     closeChainBuilder();
 
     // Reset save button
-    eventPanel.querySelector('#eventSaveBtn').disabled = true;
+    const saveBtn = eventPanel.querySelector('#eventSaveBtn');
+    saveBtn.textContent = 'Save Trip';
+    saveBtn.disabled = true;
+    saveBtn.dataset.saving = 'false';
+
+    // Hide delete button in create mode
+    const deleteBtn = eventPanel.querySelector('#eventDeleteBtn');
+    deleteBtn.style.display = 'none';
+    deleteBtn.classList.remove('confirming');
+    deleteBtn.textContent = 'Delete Trip';
 
     // Build location options
+    buildLocationPicker();
+
+    eventBackdrop.classList.add('open');
+    eventPanel.classList.add('open');
+}
+
+function openEventPanelForEdit(evt) {
+    const { eventPanel, eventBackdrop } = CalendarState;
+
+    // Build pendingEvent from raw event data
+    const arrive = new Date(parseTimestamp(evt.arrive));
+    const depart = evt.depart ? new Date(parseTimestamp(evt.depart)) : null;
+
+    pendingEvent = {
+        arrive: arrive,
+        location: evt.location,
+        depart: depart,
+        estimated: evt.estimated ? [...evt.estimated] : [],
+        travel: evt.travel ? { legs: evt.travel.legs.map(l => ({ ...l })) } : null,
+        _editingId: evt.id,
+    };
+
+    // Update date/time displays
+    updateArriveDisplay();
+    updateDepartDisplay();
+
+    // Set location
+    const loc = CalendarState.locationMap[evt.location];
+    const locValue = eventPanel.querySelector('#eventLocationValue');
+    if (loc) {
+        locValue.textContent = loc.label;
+        locValue.classList.remove('event-field-empty');
+    } else {
+        locValue.textContent = evt.location;
+        locValue.classList.remove('event-field-empty');
+    }
+    eventPanel.querySelector('#locationPicker').classList.remove('open');
+
+    // Set title
+    const label = loc ? loc.label : evt.location;
+    eventPanel.querySelector('#eventTripName').textContent = label;
+
+    // Transportation
+    renderLegsDisplay();
+    closeChainBuilder();
+
+    // Save button → "Update Trip", enabled
+    const saveBtn = eventPanel.querySelector('#eventSaveBtn');
+    saveBtn.textContent = 'Update Trip';
+    saveBtn.disabled = false;
+    saveBtn.dataset.saving = 'false';
+
+    // Show delete button in edit mode
+    const deleteBtn = eventPanel.querySelector('#eventDeleteBtn');
+    deleteBtn.style.display = '';
+    deleteBtn.classList.remove('confirming');
+    deleteBtn.textContent = 'Delete Trip';
+
+    // Build location picker for potential location change
     buildLocationPicker();
 
     eventBackdrop.classList.add('open');
@@ -1355,28 +1760,55 @@ function toISO(d) {
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function buildEventObject(pending) {
+    const obj = {
+        location: pending.location,
+        arrive: toISO(pending.arrive),
+        depart: pending.depart ? toISO(pending.depart) : null,
+        estimated: pending.estimated || [],
+    };
+    if (pending.travel && pending.travel.legs.length > 0) {
+        obj.travel = pending.travel;
+    }
+    return obj;
+}
+
 async function saveEvent() {
     if (!pendingEvent || !pendingEvent.location) return;
 
-    // Generate unique id
-    const maxId = DataProvider._data.events.reduce((max, e) => {
-        const num = parseInt(e.id.replace('evt-', ''), 10);
-        return num > max ? num : max;
-    }, 0);
-    const newId = `evt-${maxId + 1}`;
+    // Prevent double-tap
+    const saveBtn = CalendarState.eventPanel.querySelector('#eventSaveBtn');
+    if (saveBtn.dataset.saving === 'true') return;
 
-    // Add to source data
-    const newEvent = {
-        id: newId,
-        location: pendingEvent.location,
-        arrive: toISO(pendingEvent.arrive),
-        depart: pendingEvent.depart ? toISO(pendingEvent.depart) : null,
-        estimated: pendingEvent.estimated,
-    };
-    if (pendingEvent.travel && pendingEvent.travel.legs.length > 0) {
-        newEvent.travel = pendingEvent.travel;
+    // Validate
+    const mode = pendingEvent._editingId ? 'edit' : 'create';
+    const validation = ValidationEngine.validate(pendingEvent, DataProvider._data.events, mode);
+    validation.warnings.forEach(w => ToastManager.show(w, 'warning'));
+    if (!validation.valid) {
+        validation.errors.forEach(e => ToastManager.show(e, 'error'));
+        return;
     }
-    DataProvider._data.events.push(newEvent);
+
+    saveBtn.dataset.saving = 'true';
+    saveBtn.textContent = 'Saving...';
+    saveBtn.disabled = true;
+
+    const eventObj = buildEventObject(pendingEvent);
+
+    if (pendingEvent._editingId) {
+        // Edit mode: replace existing
+        eventObj.id = pendingEvent._editingId;
+        const idx = DataProvider._data.events.findIndex(e => e.id === pendingEvent._editingId);
+        if (idx !== -1) DataProvider._data.events[idx] = eventObj;
+    } else {
+        // Create mode: generate new id and push
+        const maxId = DataProvider._data.events.reduce((max, e) => {
+            const num = parseInt(e.id.replace('evt-', ''), 10);
+            return num > max ? num : max;
+        }, 0);
+        eventObj.id = `evt-${maxId + 1}`;
+        DataProvider._data.events.push(eventObj);
+    }
 
     // Re-derive and re-render locally
     refreshCalendar();
@@ -1385,9 +1817,15 @@ async function saveEvent() {
     // Persist to remote
     try {
         await DataProvider.save();
+        ToastManager.show('Trip saved', 'success', 2000);
     } catch (err) {
         console.error('Failed to save to remote:', err);
+        ToastManager.show('Saved locally. Remote sync failed.', 'warning');
     }
+
+    saveBtn.dataset.saving = 'false';
+    saveBtn.textContent = pendingEvent && pendingEvent._editingId ? 'Update Trip' : 'Save Trip';
+    saveBtn.disabled = false;
 }
 
 function refreshCalendar() {
@@ -1437,9 +1875,10 @@ async function initCalendar() {
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
 
-    // Create panels
+    // Create panels and UI systems
     createTripPanel();
     createEventPanel();
+    ToastManager.init(document.querySelector('.mobile-container'));
 
     // Calculate initial range: 13 weeks back from today + 52 weeks forward
     const today = new Date();
@@ -1468,6 +1907,9 @@ async function initCalendar() {
     const todayY = rowToY(todayWeek);
     const viewportHeight = CalendarState.viewport.clientHeight;
     CalendarState.viewport.scrollTop = todayY - viewportHeight / 2 + CELL_SIZE / 2;
+
+    // Create Today floating button
+    createTodayButton(document.querySelector('.mobile-container'));
 
     // Set up scroll handler
     CalendarState.viewport.addEventListener('scroll', () => {
