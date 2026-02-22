@@ -1852,6 +1852,567 @@ function closeEventPanel() {
 }
 
 // ============================================================
+// Chat AI Assistant
+// ============================================================
+
+const AnthropicClient = {
+    async sendMessageStream(messages, tools, systemPrompt, onDelta, onToolUse, onDone) {
+        const res = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'x-api-key': ANTHROPIC_CONFIG.apiKey,
+                'anthropic-version': '2023-06-01',
+                'anthropic-dangerous-direct-browser-access': 'true',
+                'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: ANTHROPIC_CONFIG.model,
+                max_tokens: 1024,
+                system: systemPrompt,
+                messages,
+                tools,
+                stream: true,
+            }),
+        });
+
+        if (!res.ok) {
+            const err = await res.text();
+            throw new Error(`API error ${res.status}: ${err}`);
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        const contentBlocks = [];
+        let currentBlock = null;
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // keep incomplete line
+
+            for (const line of lines) {
+                if (!line.startsWith('data: ')) continue;
+                const data = line.slice(6).trim();
+                if (data === '[DONE]') continue;
+                let evt;
+                try { evt = JSON.parse(data); } catch { continue; }
+
+                switch (evt.type) {
+                    case 'content_block_start':
+                        currentBlock = { ...evt.content_block, text: '' };
+                        break;
+                    case 'content_block_delta':
+                        if (evt.delta.type === 'text_delta' && currentBlock) {
+                            currentBlock.text += evt.delta.text;
+                            onDelta(evt.delta.text);
+                        } else if (evt.delta.type === 'input_json_delta' && currentBlock) {
+                            currentBlock.text += evt.delta.partial_json;
+                        }
+                        break;
+                    case 'content_block_stop':
+                        if (currentBlock) {
+                            if (currentBlock.type === 'tool_use') {
+                                try { currentBlock.input = JSON.parse(currentBlock.text); } catch { currentBlock.input = {}; }
+                                delete currentBlock.text;
+                            }
+                            contentBlocks.push(currentBlock);
+                            currentBlock = null;
+                        }
+                        break;
+                    case 'message_stop':
+                        break;
+                }
+            }
+        }
+
+        // Process tool uses
+        const toolUses = contentBlocks.filter(b => b.type === 'tool_use');
+        if (toolUses.length > 0) {
+            onToolUse(toolUses, contentBlocks);
+        }
+
+        onDone(contentBlocks);
+        return contentBlocks;
+    }
+};
+
+function buildSystemPrompt() {
+    const events = DataProvider._data.events;
+    const locations = DataProvider._data.locations;
+    const today = new Date().toISOString().split('T')[0];
+
+    return `You are a travel planning assistant embedded in a visual calendar app. Today is ${today}.
+
+## Your Role
+Help the user manage their travel schedule. You can view, create, edit, and delete trips. Be concise and helpful. When the user asks to add or change a trip, use the appropriate tool. When they ask questions, answer from the schedule data.
+
+## Available Locations
+${locations.map(l => `- "${l.name}" (${l.label})`).join('\n')}
+
+## Available Transport Modes
+${Object.entries(transportModes).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).join('\n')}
+
+## Current Schedule
+${events.length === 0 ? 'No trips scheduled.' : JSON.stringify(events, null, 2)}
+
+## Rules
+- Dates use ISO format: "YYYY-MM-DDTHH:mm" (e.g. "2025-03-15T14:00")
+- Each event must have a location (from the list above) and arrive datetime
+- Departure must be after arrival
+- Events cannot overlap (including travel time)
+- The "estimated" array lists fields that are approximate (e.g. ["arrive", "depart"])
+- Travel legs have: mode (from list above), duration (minutes), note (optional description like "SFO → LAX")
+- If you're unsure about exact times, mark them as estimated
+- When creating events, always call the create_event tool. Do not just describe what you would do.
+- When asked about the schedule, use get_schedule to get the latest data before answering.
+- Be concise in responses. No need for long explanations unless asked.`;
+}
+
+const chatTools = [
+    {
+        name: 'get_schedule',
+        description: 'Get all scheduled trips/events with full details',
+        input_schema: { type: 'object', properties: {}, required: [] }
+    },
+    {
+        name: 'get_event_details',
+        description: 'Get details of a specific event by ID',
+        input_schema: {
+            type: 'object',
+            properties: { event_id: { type: 'string', description: 'Event ID (e.g. "evt-1")' } },
+            required: ['event_id']
+        }
+    },
+    {
+        name: 'list_locations',
+        description: 'Get all available locations that can be used for trips',
+        input_schema: { type: 'object', properties: {}, required: [] }
+    },
+    {
+        name: 'create_event',
+        description: 'Create a new trip. Location must be from the available locations list. Returns validation errors if the trip conflicts with existing events.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                location: { type: 'string', description: 'Location name (e.g. "san-diego")' },
+                arrive: { type: 'string', description: 'Arrival datetime in ISO format (e.g. "2025-03-15T14:00")' },
+                depart: { type: 'string', description: 'Departure datetime in ISO format, or null if unknown' },
+                travel_legs: {
+                    type: 'array',
+                    description: 'Transportation legs to get there',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            mode: { type: 'string', description: 'Transport mode (car, plane, train, etc.)' },
+                            duration: { type: 'number', description: 'Duration in minutes' },
+                            note: { type: 'string', description: 'Optional note (e.g. "SFO → LAX")' }
+                        },
+                        required: ['mode']
+                    }
+                },
+                estimated: {
+                    type: 'array',
+                    description: 'Fields that are estimated/approximate (e.g. ["arrive", "depart"])',
+                    items: { type: 'string' }
+                }
+            },
+            required: ['location', 'arrive']
+        }
+    },
+    {
+        name: 'edit_event',
+        description: 'Edit an existing trip. Only include fields you want to change. Returns validation errors if the changes conflict.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                event_id: { type: 'string', description: 'Event ID to edit (e.g. "evt-1")' },
+                location: { type: 'string', description: 'New location name' },
+                arrive: { type: 'string', description: 'New arrival datetime' },
+                depart: { type: 'string', description: 'New departure datetime, or null to clear' },
+                travel_legs: {
+                    type: 'array',
+                    description: 'New transportation legs (replaces existing)',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            mode: { type: 'string' },
+                            duration: { type: 'number' },
+                            note: { type: 'string' }
+                        },
+                        required: ['mode']
+                    }
+                },
+                estimated: {
+                    type: 'array',
+                    description: 'Updated estimated fields',
+                    items: { type: 'string' }
+                }
+            },
+            required: ['event_id']
+        }
+    },
+    {
+        name: 'delete_event',
+        description: 'Delete a trip by its event ID',
+        input_schema: {
+            type: 'object',
+            properties: { event_id: { type: 'string', description: 'Event ID to delete' } },
+            required: ['event_id']
+        }
+    }
+];
+
+async function executeToolCall(name, input) {
+    switch (name) {
+        case 'get_schedule':
+            return { success: true, result: DataProvider._data.events };
+
+        case 'get_event_details': {
+            const evt = DataProvider._data.events.find(e => e.id === input.event_id);
+            if (!evt) return { success: false, error: `Event "${input.event_id}" not found` };
+            return { success: true, result: evt };
+        }
+
+        case 'list_locations':
+            return { success: true, result: DataProvider._data.locations };
+
+        case 'create_event': {
+            // Build event for validation
+            const arrive = new Date(input.arrive);
+            const depart = input.depart ? new Date(input.depart) : null;
+            const checkEvent = {
+                arrive: arrive.getTime(),
+                depart: depart ? depart.getTime() : null,
+                travel: input.travel_legs ? { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) } : null,
+                estimated: input.estimated || [],
+            };
+
+            // Validate
+            const validation = ValidationEngine.validate(checkEvent, DataProvider._data.events, 'create');
+            if (!validation.valid) {
+                return { success: false, error: `Validation failed: ${validation.errors.join('; ')}` };
+            }
+
+            // Build and save
+            const maxId = DataProvider._data.events.reduce((max, e) => {
+                const num = parseInt(e.id.replace('evt-', ''), 10);
+                return num > max ? num : max;
+            }, 0);
+            const newEvent = {
+                id: `evt-${maxId + 1}`,
+                location: input.location,
+                arrive: input.arrive,
+                depart: input.depart || null,
+                estimated: input.estimated || [],
+            };
+            if (input.travel_legs && input.travel_legs.length > 0) {
+                newEvent.travel = { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) };
+            }
+            DataProvider._data.events.push(newEvent);
+            refreshCalendar();
+            ToastManager.show('Trip created by assistant', 'success', 2000);
+            DataProvider.save().catch(err => {
+                console.error('Remote save failed:', err);
+                ToastManager.show('Saved locally. Remote sync failed.', 'warning');
+            });
+            if (validation.warnings.length > 0) {
+                return { success: true, result: newEvent, warnings: validation.warnings };
+            }
+            return { success: true, result: newEvent };
+        }
+
+        case 'edit_event': {
+            const idx = DataProvider._data.events.findIndex(e => e.id === input.event_id);
+            if (idx === -1) return { success: false, error: `Event "${input.event_id}" not found` };
+
+            const existing = { ...DataProvider._data.events[idx] };
+            // Merge fields
+            if (input.location !== undefined) existing.location = input.location;
+            if (input.arrive !== undefined) existing.arrive = input.arrive;
+            if (input.depart !== undefined) existing.depart = input.depart;
+            if (input.estimated !== undefined) existing.estimated = input.estimated;
+            if (input.travel_legs !== undefined) {
+                existing.travel = input.travel_legs.length > 0
+                    ? { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) }
+                    : undefined;
+            }
+
+            // Validate
+            const arrive = new Date(existing.arrive);
+            const depart = existing.depart ? new Date(existing.depart) : null;
+            const checkEvent = {
+                arrive: arrive.getTime(),
+                depart: depart ? depart.getTime() : null,
+                travel: existing.travel || null,
+                estimated: existing.estimated || [],
+                _editingId: input.event_id,
+            };
+            const validation = ValidationEngine.validate(checkEvent, DataProvider._data.events, 'edit');
+            if (!validation.valid) {
+                return { success: false, error: `Validation failed: ${validation.errors.join('; ')}` };
+            }
+
+            DataProvider._data.events[idx] = existing;
+            refreshCalendar();
+            ToastManager.show('Trip updated by assistant', 'success', 2000);
+            DataProvider.save().catch(err => {
+                console.error('Remote save failed:', err);
+                ToastManager.show('Saved locally. Remote sync failed.', 'warning');
+            });
+            if (validation.warnings.length > 0) {
+                return { success: true, result: existing, warnings: validation.warnings };
+            }
+            return { success: true, result: existing };
+        }
+
+        case 'delete_event': {
+            const idx = DataProvider._data.events.findIndex(e => e.id === input.event_id);
+            if (idx === -1) return { success: false, error: `Event "${input.event_id}" not found` };
+            const removed = DataProvider._data.events.splice(idx, 1)[0];
+            refreshCalendar();
+            ToastManager.show('Trip deleted by assistant', 'success', 2000);
+            DataProvider.save().catch(err => {
+                console.error('Remote save failed:', err);
+                ToastManager.show('Saved locally. Remote sync failed.', 'warning');
+            });
+            return { success: true, result: { deleted: removed.id, location: removed.location } };
+        }
+
+        default:
+            return { success: false, error: `Unknown tool: ${name}` };
+    }
+}
+
+// ============================================================
+// Split Divider Drag
+// ============================================================
+function setupSplitDivider() {
+    const divider = document.getElementById('splitDivider');
+    const chatContainer = document.getElementById('chatContainer');
+    const mobileContainer = document.querySelector('.mobile-container');
+    if (!divider || !chatContainer) return;
+
+    let isDragging = false;
+
+    divider.addEventListener('pointerdown', (e) => {
+        isDragging = true;
+        divider.setPointerCapture(e.pointerId);
+        e.preventDefault();
+    });
+
+    document.addEventListener('pointermove', (e) => {
+        if (!isDragging) return;
+        const containerRect = mobileContainer.getBoundingClientRect();
+        const containerHeight = containerRect.height;
+        const chatHeight = containerRect.bottom - e.clientY - 4; // 4 = half divider height
+        const minChat = 120;
+        const minCalendar = containerHeight * 0.3;
+        const maxChat = containerHeight - minCalendar - 8; // 8 = divider height
+        const clamped = Math.max(minChat, Math.min(maxChat, chatHeight));
+        chatContainer.style.flexBasis = clamped + 'px';
+        // Keep today button above the divider
+        if (CalendarState.todayButton) {
+            CalendarState.todayButton.style.bottom = (clamped + 8 + 16) + 'px';
+        }
+    });
+
+    document.addEventListener('pointerup', () => {
+        if (!isDragging) return;
+        isDragging = false;
+        // Trigger scroll handler to load any newly-visible chunks
+        handleScroll();
+    });
+}
+
+const ChatUI = {
+    container: null,
+    messagesEl: null,
+    inputEl: null,
+    messages: [], // conversation history: { role, content }
+    isSending: false,
+
+    init() {
+        this.container = document.getElementById('chatContainer');
+
+        // Build chat HTML directly into the container
+        this.container.innerHTML = `
+            <div class="chat-header">
+                <span class="chat-header-title">Travel Assistant</span>
+            </div>
+            <div class="chat-messages" id="chatMessages"></div>
+            <div class="chat-input-area">
+                <input type="text" class="chat-input" id="chatInput" placeholder="Ask about your schedule...">
+                <button class="chat-send-btn" id="chatSendBtn">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                </button>
+            </div>
+        `;
+
+        this.messagesEl = this.container.querySelector('#chatMessages');
+        this.inputEl = this.container.querySelector('#chatInput');
+
+        this.container.querySelector('#chatSendBtn').addEventListener('click', () => this.handleSend());
+        this.inputEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.handleSend();
+            }
+        });
+
+        // Welcome message
+        this.addMessage('assistant', 'Hi! I can help manage your travel schedule. Ask me to add a trip, check your schedule, or edit events.');
+
+        // Set up split divider drag
+        setupSplitDivider();
+    },
+
+    addMessage(role, content) {
+        const bubble = document.createElement('div');
+        bubble.className = `chat-bubble chat-bubble-${role}`;
+        bubble.textContent = content;
+        this.messagesEl.appendChild(bubble);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        return bubble;
+    },
+
+    addTypingIndicator() {
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble chat-bubble-assistant chat-typing';
+        bubble.innerHTML = '<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>';
+        bubble.id = 'chatTyping';
+        this.messagesEl.appendChild(bubble);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+        return bubble;
+    },
+
+    removeTypingIndicator() {
+        const el = this.messagesEl.querySelector('#chatTyping');
+        if (el) el.remove();
+    },
+
+    async handleSend() {
+        const text = this.inputEl.value.trim();
+        if (!text || this.isSending) return;
+
+        this.inputEl.value = '';
+        this.addMessage('user', text);
+        this.messages.push({ role: 'user', content: text });
+
+        this.isSending = true;
+        this.inputEl.disabled = true;
+
+        try {
+            await this.sendToAssistant();
+        } catch (err) {
+            console.error('Chat error:', err);
+            this.removeTypingIndicator();
+            const errMsg = err.message || String(err);
+            this.addMessage('assistant', `Error: ${errMsg}`);
+        }
+
+        this.isSending = false;
+        this.inputEl.disabled = false;
+        this.inputEl.focus();
+    },
+
+    async sendToAssistant() {
+        this.addTypingIndicator();
+
+        // Build API messages from conversation history
+        const apiMessages = this.messages.map(m => ({ role: m.role, content: m.content }));
+        const systemPrompt = buildSystemPrompt();
+
+        let streamBubble = null;
+        let streamText = '';
+        const allToolUses = [];
+
+        await AnthropicClient.sendMessageStream(
+            apiMessages,
+            chatTools,
+            systemPrompt,
+            // onDelta — stream text into bubble
+            (delta) => {
+                if (!streamBubble) {
+                    this.removeTypingIndicator();
+                    streamBubble = document.createElement('div');
+                    streamBubble.className = 'chat-bubble chat-bubble-assistant';
+                    this.messagesEl.appendChild(streamBubble);
+                }
+                streamText += delta;
+                streamBubble.textContent = streamText;
+                this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+            },
+            // onToolUse
+            (toolUses) => { allToolUses.push(...toolUses); },
+            // onDone
+            () => {}
+        );
+
+        // If there were tool uses, execute them and get follow-up
+        if (allToolUses.length > 0) {
+            // Add assistant message with tool uses to history
+            const assistantContent = [];
+            if (streamText) assistantContent.push({ type: 'text', text: streamText });
+            allToolUses.forEach(tu => assistantContent.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input }));
+            this.messages.push({ role: 'assistant', content: assistantContent });
+
+            // Execute tools and collect results
+            const toolResults = [];
+            for (const tu of allToolUses) {
+                const result = await executeToolCall(tu.name, tu.input);
+                toolResults.push({
+                    type: 'tool_result',
+                    tool_use_id: tu.id,
+                    content: JSON.stringify(result),
+                });
+            }
+            this.messages.push({ role: 'user', content: toolResults });
+
+            // Get follow-up response
+            streamBubble = null;
+            streamText = '';
+            if (!this.messagesEl.querySelector('#chatTyping')) {
+                this.addTypingIndicator();
+            }
+
+            await AnthropicClient.sendMessageStream(
+                this.messages.map(m => ({ role: m.role, content: m.content })),
+                chatTools,
+                systemPrompt,
+                (delta) => {
+                    if (!streamBubble) {
+                        this.removeTypingIndicator();
+                        streamBubble = document.createElement('div');
+                        streamBubble.className = 'chat-bubble chat-bubble-assistant';
+                        this.messagesEl.appendChild(streamBubble);
+                    }
+                    streamText += delta;
+                    streamBubble.textContent = streamText;
+                    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+                },
+                () => {},
+                () => {}
+            );
+
+            if (streamText) {
+                this.messages.push({ role: 'assistant', content: streamText });
+            }
+        } else {
+            // Simple text response
+            if (streamText) {
+                this.messages.push({ role: 'assistant', content: streamText });
+            }
+        }
+
+        this.removeTypingIndicator();
+    }
+};
+
+// ============================================================
 // Initialize
 // ============================================================
 async function initCalendar() {
@@ -1910,6 +2471,9 @@ async function initCalendar() {
 
     // Create Today floating button
     createTodayButton(document.querySelector('.mobile-container'));
+
+    // Initialize chat UI (split layout — always visible)
+    ChatUI.init();
 
     // Set up scroll handler
     CalendarState.viewport.addEventListener('scroll', () => {
