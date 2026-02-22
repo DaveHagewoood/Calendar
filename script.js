@@ -25,6 +25,51 @@ const transportModes = {
     uber: { icon: '🚙', label: 'Uber' }
 };
 
+// Color palette for dynamically created locations
+const COLOR_PALETTE = [
+    '#E8B84D', '#C66B6B', '#8B6FB8', '#5AB89E', '#B8895B', '#6BC6E8',
+    '#E87D5A', '#7DB86B', '#B85B8F', '#5B8FB8', '#D4A053', '#6BE8C4',
+    '#A06BE8', '#E8CB5A', '#5AE8A0', '#E85A7D'
+];
+
+// Accommodation types
+const STAY_TYPES = {
+    hotel:   { icon: '🏨', label: 'Hotel' },
+    house:   { icon: '🏠', label: 'House' },
+    airbnb:  { icon: '🏡', label: 'Airbnb' },
+    yacht:   { icon: '🛥️', label: 'Yacht' },
+    hostel:  { icon: '🛏️', label: 'Hostel' },
+    camping: { icon: '⛺', label: 'Camping' },
+    other:   { icon: '📍', label: 'Other' },
+};
+
+function slugify(label) {
+    return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+}
+
+function getNextPaletteColor(existingLocations) {
+    const usedColors = new Set(existingLocations.map(l => l.color));
+    for (const color of COLOR_PALETTE) {
+        if (!usedColors.has(color)) return color;
+    }
+    return COLOR_PALETTE[existingLocations.length % COLOR_PALETTE.length];
+}
+
+function ensureLocation(nameOrLabel) {
+    const name = slugify(nameOrLabel);
+    if (CalendarState.locationMap[name]) {
+        return CalendarState.locationMap[name];
+    }
+    // Capitalize first letter of each word for label
+    const label = nameOrLabel.replace(/\b\w/g, c => c.toUpperCase());
+    const color = getNextPaletteColor(DataProvider._data.locations);
+    const newLoc = { name, label, color };
+    DataProvider._data.locations.push(newLoc);
+    CalendarState.locations = DataProvider._data.locations;
+    CalendarState.locationMap[name] = newLoc;
+    return newLoc;
+}
+
 // ============================================================
 // Parse helpers
 // ============================================================
@@ -550,12 +595,15 @@ function computeEventCompleteness(rawEvent) {
 function renderStays(container, stays, clipStart, clipEnd) {
     stays.forEach(stay => {
         if (stay.end <= clipStart || stay.start >= clipEnd) return;
-        const classes = [`location-${stay.location}`];
+        const loc = CalendarState.locationMap[stay.location];
+        const fillColor = loc ? loc.color : '#3a3a3a';
+        const classes = [];
         if (stay.estimated && stay.estimated.length > 0) {
             classes.push('estimated-segment');
         }
-        renderSegment(container, stay.start, stay.end,
+        const segs = renderSegment(container, stay.start, stay.end,
             'continuous-fill', classes, clipStart, clipEnd);
+        segs.forEach(seg => seg.style.setProperty('--fill-color', fillColor));
 
         // Completeness badge at the start of the stay (if visible in this chunk)
         if (stay.eventId && stay.start >= clipStart && stay.start < clipEnd) {
@@ -651,7 +699,15 @@ function renderLabels(container, stays, clipStart, clipEnd) {
                 'location-label' + (isNarrow ? ' location-label-narrow' : ''),
                 colToX(startCol), rowToY(row), colSpan * CELL_SIZE, CELL_SIZE
             );
-            label.textContent = loc.label;
+            // Show "City · Accommodation" when stay.name exists
+            let labelText = loc.label;
+            if (stay.eventId) {
+                const rawEvt = DataProvider._data.events.find(e => e.id === stay.eventId);
+                if (rawEvt && rawEvt.stay && rawEvt.stay.name) {
+                    labelText += ` \u00B7 ${rawEvt.stay.name}`;
+                }
+            }
+            label.textContent = labelText;
             container.appendChild(label);
         }
     });
@@ -1118,6 +1174,19 @@ function createEventPanel() {
                 <div class="event-field-value event-field-empty" id="eventLocationValue">Tap to set destination</div>
                 <div class="location-picker" id="locationPicker"></div>
             </div>
+            <div class="event-field" id="eventStayField" style="display:none">
+                <div class="event-field-label">Accommodation</div>
+                <div class="event-field-value event-field-empty event-field-tappable" id="eventStayTypeDisplay">Tap to set type</div>
+                <div class="location-picker" id="stayTypePicker"></div>
+                <div id="eventStayNameField" style="margin-top:8px;display:none">
+                    <div class="event-field-label">Name</div>
+                    <input type="text" class="leg-input" id="eventStayName" placeholder="e.g. Hotel Le Marais">
+                </div>
+                <div id="eventStayAddressField" style="margin-top:8px;display:none">
+                    <div class="event-field-label">Address</div>
+                    <input type="text" class="leg-input" id="eventStayAddress" placeholder="Full address">
+                </div>
+            </div>
             <div class="event-field" id="eventDepartField">
                 <div class="event-field-label">Departure</div>
                 <div class="event-field-datetime">
@@ -1414,6 +1483,41 @@ function buildLocationPicker() {
         });
         picker.appendChild(opt);
     });
+
+    // "Add new city" option
+    const addOpt = document.createElement('div');
+    addOpt.className = 'location-option';
+    addOpt.innerHTML = `<span class="location-dot" style="background:#666;border:1px dashed #aaa"></span><span style="color:#aaa">+ Add new city...</span>`;
+    addOpt.addEventListener('click', (e) => {
+        e.stopPropagation();
+        showNewCityInput(picker);
+    });
+    picker.appendChild(addOpt);
+}
+
+function showNewCityInput(picker) {
+    picker.innerHTML = `
+        <div style="padding: 8px 4px;">
+            <input type="text" class="leg-input" id="newCityInput" placeholder="City name (e.g. Barcelona)">
+            <div style="display:flex;gap:8px;margin-top:8px">
+                <button class="leg-cancel-btn" id="newCityCancel">Cancel</button>
+                <button class="leg-confirm-btn" id="newCityConfirm">Add</button>
+            </div>
+        </div>
+    `;
+    const input = picker.querySelector('#newCityInput');
+    setTimeout(() => input.focus(), 50);
+    picker.querySelector('#newCityCancel').addEventListener('click', () => buildLocationPicker());
+    const confirmCity = () => {
+        const label = input.value.trim();
+        if (!label) return;
+        const loc = ensureLocation(label);
+        selectLocation(loc);
+    };
+    picker.querySelector('#newCityConfirm').addEventListener('click', confirmCity);
+    input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') confirmCity();
+    });
 }
 
 function closeAllTimePickers() {
@@ -1439,6 +1543,68 @@ function selectLocation(loc) {
     // Close picker and enable save
     CalendarState.eventPanel.querySelector('#locationPicker').classList.remove('open');
     CalendarState.eventPanel.querySelector('#eventSaveBtn').disabled = false;
+
+    // Show accommodation section
+    showStaySection();
+}
+
+function showStaySection() {
+    const panel = CalendarState.eventPanel;
+    const stayField = panel.querySelector('#eventStayField');
+    stayField.style.display = '';
+
+    // Build stay type picker
+    const typePicker = stayField.querySelector('#stayTypePicker');
+    typePicker.innerHTML = '';
+    Object.entries(STAY_TYPES).forEach(([key, st]) => {
+        const opt = document.createElement('div');
+        opt.className = 'location-option';
+        opt.innerHTML = `<span style="font-size:16px">${st.icon}</span><span>${st.label}</span>`;
+        opt.addEventListener('click', (e) => {
+            e.stopPropagation();
+            selectStayType(key);
+        });
+        typePicker.appendChild(opt);
+    });
+
+    // Wire up type display tap
+    const typeDisplay = stayField.querySelector('#eventStayTypeDisplay');
+    typeDisplay.onclick = () => typePicker.classList.toggle('open');
+
+    // Pre-fill if editing
+    if (pendingEvent.stay) {
+        if (pendingEvent.stay.type) {
+            const st = STAY_TYPES[pendingEvent.stay.type];
+            typeDisplay.innerHTML = `${st ? st.icon : ''} ${st ? st.label : pendingEvent.stay.type}`;
+            typeDisplay.classList.remove('event-field-empty');
+            stayField.querySelector('#eventStayNameField').style.display = '';
+            stayField.querySelector('#eventStayAddressField').style.display = '';
+        }
+        if (pendingEvent.stay.name) {
+            stayField.querySelector('#eventStayNameField').style.display = '';
+            stayField.querySelector('#eventStayName').value = pendingEvent.stay.name;
+        }
+        if (pendingEvent.stay.address) {
+            stayField.querySelector('#eventStayAddressField').style.display = '';
+            stayField.querySelector('#eventStayAddress').value = pendingEvent.stay.address;
+        }
+    }
+}
+
+function selectStayType(type) {
+    if (!pendingEvent.stay) pendingEvent.stay = {};
+    pendingEvent.stay.type = type;
+
+    const stayField = CalendarState.eventPanel.querySelector('#eventStayField');
+    const st = STAY_TYPES[type];
+    const typeDisplay = stayField.querySelector('#eventStayTypeDisplay');
+    typeDisplay.innerHTML = `${st.icon} ${st.label}`;
+    typeDisplay.classList.remove('event-field-empty');
+    stayField.querySelector('#stayTypePicker').classList.remove('open');
+
+    // Show name and address fields
+    stayField.querySelector('#eventStayNameField').style.display = '';
+    stayField.querySelector('#eventStayAddressField').style.display = '';
 }
 
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -1658,6 +1824,7 @@ function openEventPanel(date) {
         depart: departDate,
         estimated: ['arrive', 'depart'],
         travel: null,
+        stay: null,
     };
 
     // Update displays
@@ -1676,6 +1843,17 @@ function openEventPanel(date) {
     // Reset transportation
     renderLegsDisplay();
     closeChainBuilder();
+
+    // Reset accommodation
+    const stayField = eventPanel.querySelector('#eventStayField');
+    stayField.style.display = 'none';
+    stayField.querySelector('#stayTypePicker').classList.remove('open');
+    stayField.querySelector('#eventStayTypeDisplay').textContent = 'Tap to set type';
+    stayField.querySelector('#eventStayTypeDisplay').classList.add('event-field-empty');
+    stayField.querySelector('#eventStayNameField').style.display = 'none';
+    stayField.querySelector('#eventStayAddressField').style.display = 'none';
+    stayField.querySelector('#eventStayName').value = '';
+    stayField.querySelector('#eventStayAddress').value = '';
 
     // Reset save button
     const saveBtn = eventPanel.querySelector('#eventSaveBtn');
@@ -1709,6 +1887,7 @@ function openEventPanelForEdit(evt) {
         depart: depart,
         estimated: evt.estimated ? [...evt.estimated] : [],
         travel: evt.travel ? { legs: evt.travel.legs.map(l => ({ ...l })) } : null,
+        stay: evt.stay ? { ...evt.stay } : null,
         _editingId: evt.id,
     };
 
@@ -1719,22 +1898,29 @@ function openEventPanelForEdit(evt) {
     // Set location
     const loc = CalendarState.locationMap[evt.location];
     const locValue = eventPanel.querySelector('#eventLocationValue');
-    if (loc) {
-        locValue.textContent = loc.label;
-        locValue.classList.remove('event-field-empty');
-    } else {
-        locValue.textContent = evt.location;
-        locValue.classList.remove('event-field-empty');
+    let displayName = loc ? loc.label : evt.location;
+    if (evt.stay && evt.stay.name) {
+        displayName += ` \u00B7 ${evt.stay.name}`;
     }
+    if (loc) {
+        locValue.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span>${displayName}`;
+    } else {
+        locValue.textContent = displayName;
+    }
+    locValue.classList.remove('event-field-empty');
     eventPanel.querySelector('#locationPicker').classList.remove('open');
 
     // Set title
-    const label = loc ? loc.label : evt.location;
-    eventPanel.querySelector('#eventTripName').textContent = label;
+    eventPanel.querySelector('#eventTripName').textContent = displayName;
 
     // Transportation
     renderLegsDisplay();
     closeChainBuilder();
+
+    // Accommodation section
+    if (evt.location) {
+        showStaySection();
+    }
 
     // Save button → "Update Trip", enabled
     const saveBtn = eventPanel.querySelector('#eventSaveBtn');
@@ -1770,6 +1956,12 @@ function buildEventObject(pending) {
     if (pending.travel && pending.travel.legs.length > 0) {
         obj.travel = pending.travel;
     }
+    if (pending.stay && (pending.stay.type || pending.stay.name || pending.stay.address)) {
+        obj.stay = {};
+        if (pending.stay.type) obj.stay.type = pending.stay.type;
+        if (pending.stay.name) obj.stay.name = pending.stay.name;
+        if (pending.stay.address) obj.stay.address = pending.stay.address;
+    }
     return obj;
 }
 
@@ -1792,6 +1984,16 @@ async function saveEvent() {
     saveBtn.dataset.saving = 'true';
     saveBtn.textContent = 'Saving...';
     saveBtn.disabled = true;
+
+    // Collect stay fields from UI before building event
+    const stayField = CalendarState.eventPanel.querySelector('#eventStayField');
+    if (stayField && stayField.style.display !== 'none') {
+        if (!pendingEvent.stay) pendingEvent.stay = {};
+        const nameVal = stayField.querySelector('#eventStayName').value.trim();
+        const addrVal = stayField.querySelector('#eventStayAddress').value.trim();
+        if (nameVal) pendingEvent.stay.name = nameVal;
+        if (addrVal) pendingEvent.stay.address = addrVal;
+    }
 
     const eventObj = buildEventObject(pendingEvent);
 
@@ -1837,6 +2039,12 @@ function refreshCalendar() {
     CalendarState.stays = stays;
     CalendarState.travel = travel;
     CalendarState.gaps = gaps;
+
+    // Refresh locations in case new ones were added dynamically
+    CalendarState.locations = DataProvider._data.locations;
+    CalendarState.locationMap = Object.fromEntries(
+        DataProvider._data.locations.map(l => [l.name, l])
+    );
 
     // Re-render all visible chunks
     const chunkIndices = [...CalendarState.chunks.keys()];
@@ -1950,8 +2158,15 @@ function buildSystemPrompt() {
 ## Your Role
 Help the user manage their travel schedule. You can view, create, edit, and delete trips. Be concise and helpful. When the user asks to add or change a trip, use the appropriate tool. When they ask questions, answer from the schedule data.
 
-## Available Locations
+## Known Locations
 ${locations.map(l => `- "${l.name}" (${l.label})`).join('\n')}
+
+You can also use ANY city in the world. If you specify a location name that doesn't exist yet, it will be automatically created. Use a slug format like "barcelona", "new-york", "cape-town".
+
+## Accommodation Types
+${Object.entries(STAY_TYPES).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).join('\n')}
+
+Events can optionally include accommodation details: stay_type, stay_name (hotel/property name), and stay_address. These are optional — the minimum required is just a city.
 
 ## Available Transport Modes
 ${Object.entries(transportModes).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).join('\n')}
@@ -1961,15 +2176,16 @@ ${events.length === 0 ? 'No trips scheduled.' : JSON.stringify(events, null, 2)}
 
 ## Rules
 - Dates use ISO format: "YYYY-MM-DDTHH:mm" (e.g. "2025-03-15T14:00")
-- Each event must have a location (from the list above) and arrive datetime
+- Each event must have a location (existing or new city slug) and arrive datetime
 - Departure must be after arrival
 - Events cannot overlap (including travel time)
 - The "estimated" array lists fields that are approximate (e.g. ["arrive", "depart"])
-- Travel legs have: mode (from list above), duration (minutes), note (optional description like "SFO → LAX")
-- If you're unsure about exact times, mark them as estimated
-- When creating events, always call the create_event tool. Do not just describe what you would do.
-- When asked about the schedule, use get_schedule to get the latest data before answering.
-- Be concise in responses. No need for long explanations unless asked.`;
+- Travel legs have: mode, duration (minutes), note (optional)
+- Stay info is optional: stay_type, stay_name, stay_address
+- Multiple stays in the same city are fine (e.g. different hotels)
+- When creating events, always call the create_event tool
+- When asked about the schedule, use get_schedule to get the latest data before answering
+- Be concise in responses`;
 }
 
 const chatTools = [
@@ -1994,11 +2210,11 @@ const chatTools = [
     },
     {
         name: 'create_event',
-        description: 'Create a new trip. Location must be from the available locations list. Returns validation errors if the trip conflicts with existing events.',
+        description: 'Create a new trip. Location can be any existing city or a new city slug. New cities are auto-created. Returns validation errors if the trip conflicts.',
         input_schema: {
             type: 'object',
             properties: {
-                location: { type: 'string', description: 'Location name (e.g. "san-diego")' },
+                location: { type: 'string', description: 'City slug (e.g. "san-diego", "barcelona", "new-york")' },
                 arrive: { type: 'string', description: 'Arrival datetime in ISO format (e.g. "2025-03-15T14:00")' },
                 depart: { type: 'string', description: 'Departure datetime in ISO format, or null if unknown' },
                 travel_legs: {
@@ -2018,7 +2234,10 @@ const chatTools = [
                     type: 'array',
                     description: 'Fields that are estimated/approximate (e.g. ["arrive", "depart"])',
                     items: { type: 'string' }
-                }
+                },
+                stay_type: { type: 'string', description: 'Accommodation type: hotel, house, airbnb, yacht, hostel, camping, other' },
+                stay_name: { type: 'string', description: 'Name of the accommodation (e.g. "Hotel Le Marais")' },
+                stay_address: { type: 'string', description: 'Full address of the accommodation' }
             },
             required: ['location', 'arrive']
         }
@@ -2030,7 +2249,7 @@ const chatTools = [
             type: 'object',
             properties: {
                 event_id: { type: 'string', description: 'Event ID to edit (e.g. "evt-1")' },
-                location: { type: 'string', description: 'New location name' },
+                location: { type: 'string', description: 'New city slug' },
                 arrive: { type: 'string', description: 'New arrival datetime' },
                 depart: { type: 'string', description: 'New departure datetime, or null to clear' },
                 travel_legs: {
@@ -2050,7 +2269,10 @@ const chatTools = [
                     type: 'array',
                     description: 'Updated estimated fields',
                     items: { type: 'string' }
-                }
+                },
+                stay_type: { type: 'string', description: 'Accommodation type: hotel, house, airbnb, yacht, hostel, camping, other' },
+                stay_name: { type: 'string', description: 'Name of the accommodation' },
+                stay_address: { type: 'string', description: 'Full address of the accommodation' }
             },
             required: ['event_id']
         }
@@ -2062,6 +2284,18 @@ const chatTools = [
             type: 'object',
             properties: { event_id: { type: 'string', description: 'Event ID to delete' } },
             required: ['event_id']
+        }
+    },
+    {
+        name: 'create_location',
+        description: 'Create a new city/location. Returns the created location with auto-assigned color. Note: create_event auto-creates locations too, so this is only needed if you want to set a custom color.',
+        input_schema: {
+            type: 'object',
+            properties: {
+                label: { type: 'string', description: 'Display name (e.g. "Barcelona", "New York")' },
+                color: { type: 'string', description: 'Optional hex color (e.g. "#E87D5A"). Auto-assigned if omitted.' }
+            },
+            required: ['label']
         }
     }
 ];
@@ -2081,6 +2315,9 @@ async function executeToolCall(name, input) {
             return { success: true, result: DataProvider._data.locations };
 
         case 'create_event': {
+            // Auto-create location if it doesn't exist
+            ensureLocation(input.location);
+
             // Build event for validation
             const arrive = new Date(input.arrive);
             const depart = input.depart ? new Date(input.depart) : null;
@@ -2104,13 +2341,19 @@ async function executeToolCall(name, input) {
             }, 0);
             const newEvent = {
                 id: `evt-${maxId + 1}`,
-                location: input.location,
+                location: slugify(input.location),
                 arrive: input.arrive,
                 depart: input.depart || null,
                 estimated: input.estimated || [],
             };
             if (input.travel_legs && input.travel_legs.length > 0) {
                 newEvent.travel = { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) };
+            }
+            if (input.stay_type || input.stay_name || input.stay_address) {
+                newEvent.stay = {};
+                if (input.stay_type) newEvent.stay.type = input.stay_type;
+                if (input.stay_name) newEvent.stay.name = input.stay_name;
+                if (input.stay_address) newEvent.stay.address = input.stay_address;
             }
             DataProvider._data.events.push(newEvent);
             refreshCalendar();
@@ -2131,7 +2374,10 @@ async function executeToolCall(name, input) {
 
             const existing = { ...DataProvider._data.events[idx] };
             // Merge fields
-            if (input.location !== undefined) existing.location = input.location;
+            if (input.location !== undefined) {
+                ensureLocation(input.location);
+                existing.location = slugify(input.location);
+            }
             if (input.arrive !== undefined) existing.arrive = input.arrive;
             if (input.depart !== undefined) existing.depart = input.depart;
             if (input.estimated !== undefined) existing.estimated = input.estimated;
@@ -2139,6 +2385,13 @@ async function executeToolCall(name, input) {
                 existing.travel = input.travel_legs.length > 0
                     ? { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) }
                     : undefined;
+            }
+            // Merge stay fields
+            if (input.stay_type !== undefined || input.stay_name !== undefined || input.stay_address !== undefined) {
+                if (!existing.stay) existing.stay = {};
+                if (input.stay_type !== undefined) existing.stay.type = input.stay_type;
+                if (input.stay_name !== undefined) existing.stay.name = input.stay_name;
+                if (input.stay_address !== undefined) existing.stay.address = input.stay_address;
             }
 
             // Validate
@@ -2180,6 +2433,20 @@ async function executeToolCall(name, input) {
                 ToastManager.show('Saved locally. Remote sync failed.', 'warning');
             });
             return { success: true, result: { deleted: removed.id, location: removed.location } };
+        }
+
+        case 'create_location': {
+            const name = slugify(input.label);
+            if (CalendarState.locationMap[name]) {
+                return { success: true, result: CalendarState.locationMap[name], note: 'Already exists' };
+            }
+            const color = input.color || getNextPaletteColor(DataProvider._data.locations);
+            const newLoc = { name, label: input.label, color };
+            DataProvider._data.locations.push(newLoc);
+            CalendarState.locations = DataProvider._data.locations;
+            CalendarState.locationMap[name] = newLoc;
+            DataProvider.save().catch(err => console.error('Remote save failed:', err));
+            return { success: true, result: newLoc };
         }
 
         default:

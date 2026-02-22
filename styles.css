@@ -182,31 +182,7 @@ body {
     transform: translate(-50%, -50%) scale(1.15);
 }
 
-/* Location colors */
-.location-san-diego {
-    --fill-color: #E8B84D;
-}
-
-.location-paris {
-    --fill-color: #C66B6B;
-}
-
-.location-tokyo {
-    --fill-color: #8B6FB8;
-}
-
-.location-beach {
-    --fill-color: #5AB89E;
-}
-
-.location-mountains {
-    --fill-color: #B8895B;
-}
-
-.location-lake {
-    --fill-color: #6BC6E8;
-}
-
+/* Location colors — dynamic via inline --fill-color. Only gap styling is static. */
 .location-undefined {
     --fill-color: #3a3a3a;
     background-image: url("data:image/svg+xml,%3Csvg width='54' height='54' xmlns='http://www.w3.org/2000/svg'%3E%3Ctext x='27' y='35' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='600' fill='%23ffffff' opacity='0.12'%3E%3F%3C/text%3E%3C/svg%3E") !important;
