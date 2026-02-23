@@ -170,7 +170,18 @@ const ValidationEngine = {
                     if (eventStart < oEnd && eventEnd > oStart) {
                         const loc = CalendarState.locationMap[other.location];
                         const name = loc ? loc.label : other.location;
-                        return { level: 'error', message: `Overlaps with ${name}` };
+                        const fmtRange = (s, e) => {
+                            const fd = (ms) => new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+                                + ' ' + new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+                            return `${fd(s)} → ${fd(e)}`;
+                        };
+                        return {
+                            level: 'error',
+                            message: `Overlaps with ${name} (${other.id}). `
+                                + `Your event occupies ${fmtRange(eventStart, eventEnd)}. `
+                                + `${name} occupies ${fmtRange(oStart, oEnd)}${!otherDepart ? ' (no depart set — defaults to end of day)' : ''}. `
+                                + `Conflict: ${fmtRange(Math.max(eventStart, oStart), Math.min(eventEnd, oEnd))}.`
+                        };
                     }
                 }
                 return null;
@@ -1220,7 +1231,9 @@ function createEventPanel() {
             clearTimeout(deleteConfirmTimer);
             this.classList.remove('confirming');
             const id = pendingEvent._editingId;
+            const deletedEvt = DataProvider._data.events.find(e => e.id === id);
             DataProvider._data.events = DataProvider._data.events.filter(e => e.id !== id);
+            if (deletedEvt) notifyChat('deleted', deletedEvt);
             refreshCalendar();
             closeEventPanel();
             try {
@@ -2002,6 +2015,7 @@ async function saveEvent() {
         eventObj.id = pendingEvent._editingId;
         const idx = DataProvider._data.events.findIndex(e => e.id === pendingEvent._editingId);
         if (idx !== -1) DataProvider._data.events[idx] = eventObj;
+        notifyChat('edited', eventObj);
     } else {
         // Create mode: generate new id and push
         const maxId = DataProvider._data.events.reduce((max, e) => {
@@ -2010,6 +2024,7 @@ async function saveEvent() {
         }, 0);
         eventObj.id = `evt-${maxId + 1}`;
         DataProvider._data.events.push(eventObj);
+        notifyChat('created', eventObj);
     }
 
     // Re-derive and re-render locally
@@ -2057,6 +2072,26 @@ function closeEventPanel() {
     CalendarState.eventBackdrop.classList.remove('open');
     CalendarState.eventPanel.classList.remove('open');
     pendingEvent = null;
+}
+
+// ============================================================
+// Manual Change Context Injection
+// ============================================================
+function notifyChat(action, eventObj) {
+    if (!ChatUI.messages || ChatUI.messages.length === 0) return;
+    const loc = CalendarState.locationMap[eventObj.location];
+    const label = loc ? loc.label : eventObj.location;
+    let stayInfo = '';
+    if (eventObj.stay && eventObj.stay.name) stayInfo = ` — ${eventObj.stay.name}`;
+    let msg;
+    if (action === 'created') {
+        msg = `[System: The user manually created ${eventObj.id} (${label}${stayInfo}), arriving ${eventObj.arrive || '?'}${eventObj.depart ? ', departing ' + eventObj.depart : ''}]`;
+    } else if (action === 'edited') {
+        msg = `[System: The user manually edited ${eventObj.id} (${label}${stayInfo}), now arriving ${eventObj.arrive || '?'}${eventObj.depart ? ', departing ' + eventObj.depart : ''}]`;
+    } else if (action === 'deleted') {
+        msg = `[System: The user manually deleted ${eventObj.id} (${label}${stayInfo})]`;
+    }
+    if (msg) ChatUI.messages.push({ role: 'user', content: msg });
 }
 
 // ============================================================
@@ -2148,8 +2183,56 @@ const AnthropicClient = {
     }
 };
 
-function buildSystemPrompt() {
+function buildScheduleTimeline() {
     const events = DataProvider._data.events;
+    if (events.length === 0) return 'No trips scheduled.';
+
+    // Sort events by arrive time
+    const sorted = [...events].sort((a, b) => new Date(a.arrive) - new Date(b.arrive));
+    const fmt = (iso) => {
+        if (!iso) return '?';
+        const d = new Date(iso);
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+            + ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    };
+
+    const lines = sorted.map(e => {
+        const loc = CalendarState.locationMap[e.location];
+        const label = loc ? loc.label : e.location;
+
+        // Compute effective occupied range
+        let rangeStart = new Date(e.arrive).getTime();
+        if (e.travel && e.travel.legs && e.travel.legs.length > 0) {
+            const totalMin = e.travel.legs.reduce((s, l) => s + (l.duration || EstimationEngine.estimateLegDuration(l)), 0);
+            rangeStart = rangeStart - totalMin * 60000;
+        }
+        let rangeEnd;
+        if (e.depart) {
+            rangeEnd = new Date(e.depart).getTime();
+        } else {
+            const d = new Date(e.arrive);
+            d.setHours(23, 59, 59, 0);
+            rangeEnd = d.getTime();
+        }
+
+        let line = `  ${e.id}: ${label}`;
+        if (e.stay && e.stay.name) line += ` (${e.stay.name})`;
+        line += `\n    arrive: ${fmt(e.arrive)}`;
+        line += `\n    depart: ${e.depart ? fmt(e.depart) : 'not set (defaults to end of arrival day)'}`;
+        if (e.travel && e.travel.legs && e.travel.legs.length > 0) {
+            const totalMin = e.travel.legs.reduce((s, l) => s + (l.duration || EstimationEngine.estimateLegDuration(l)), 0);
+            const modes = e.travel.legs.map(l => l.mode).join(' → ');
+            line += `\n    travel: ${modes}, ${totalMin} min before arrive`;
+        }
+        line += `\n    occupied range: ${fmt(new Date(rangeStart).toISOString())} → ${fmt(new Date(rangeEnd).toISOString())}`;
+        if (e.estimated && e.estimated.length > 0) line += `\n    estimated: [${e.estimated.join(', ')}]`;
+        return line;
+    });
+
+    return lines.join('\n\n');
+}
+
+function buildSystemPrompt() {
     const locations = DataProvider._data.locations;
     const today = new Date().toISOString().split('T')[0];
 
@@ -2157,6 +2240,36 @@ function buildSystemPrompt() {
 
 ## Your Role
 Help the user manage their travel schedule. You can view, create, edit, and delete trips. Be concise and helpful. When the user asks to add or change a trip, use the appropriate tool. When they ask questions, answer from the schedule data.
+
+## CRITICAL: How Time Works in This System
+
+**"arrive" = when you physically arrive AT the destination, NOT when you leave the previous place.**
+
+Travel legs render BACKWARD from the arrive time. If you arrive in NYC at 11:30am after a 5-hour flight, the travel segment occupies 6:30am–11:30am. The "occupied range" of the event includes this travel window.
+
+**If an event has no depart time, the system treats it as ending at 23:59 on the arrival day.** This means it blocks the entire rest of that day.
+
+### Worked Example
+User says: "I left San Diego at 6:30am on a jet for New York"
+- The user LEFT at 6:30am — that is the travel departure, not the arrival.
+- Estimate flight time: ~5 hours (300 minutes).
+- So arrive in New York = 6:30am + 5h = 11:30am.
+- Create event: arrive="2026-01-29T11:30", travel_legs=[{mode:"plane", duration:300}]
+- The system will render travel from 6:30am to 11:30am (backward from arrive).
+
+### Default Travel Duration Estimates (used when duration is omitted)
+${Object.entries(EstimationEngine.modeDurations).map(([k, v]) => `- ${k}: ${v} min`).join('\n')}
+- other/unknown: 60 min
+
+**IMPORTANT: Always provide a duration on travel legs.** If the user doesn't specify, estimate based on the route. Omitting duration causes the system to use the defaults above, which may not match the actual route and can cause unexpected overlaps.
+
+## Workflow: Inserting Trips Between Existing Events
+When the user describes a trip that falls within an existing event's time range:
+1. FIRST use edit_event to adjust the existing event's depart time (to make room)
+2. THEN create_event for the new trip(s)
+3. If the user returns to the original city afterward, create another event for the return
+
+Always check the "occupied range" in the schedule below to see where events actually sit before making changes.
 
 ## Known Locations
 ${locations.map(l => `- "${l.name}" (${l.label})`).join('\n')}
@@ -2171,21 +2284,23 @@ Events can optionally include accommodation details: stay_type, stay_name (hotel
 ## Available Transport Modes
 ${Object.entries(transportModes).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).join('\n')}
 
-## Current Schedule
-${events.length === 0 ? 'No trips scheduled.' : JSON.stringify(events, null, 2)}
+## Current Schedule (LIVE — trust this over conversation history)
+The schedule below is the real-time state. The user may have added, edited, or deleted trips manually since your last message. Always trust this data over what you remember from earlier in the conversation.
+
+${buildScheduleTimeline()}
 
 ## Rules
 - Dates use ISO format: "YYYY-MM-DDTHH:mm" (e.g. "2025-03-15T14:00")
 - Each event must have a location (existing or new city slug) and arrive datetime
 - Departure must be after arrival
-- Events cannot overlap (including travel time)
+- Events cannot overlap — check the "occupied range" fields above to avoid conflicts
 - The "estimated" array lists fields that are approximate (e.g. ["arrive", "depart"])
-- Travel legs have: mode, duration (minutes), note (optional)
+- Travel legs have: mode, duration (minutes, ALWAYS provide this), note (optional)
 - Stay info is optional: stay_type, stay_name, stay_address
 - Multiple stays in the same city are fine (e.g. different hotels)
 - When creating events, always call the create_event tool
 - When asked about the schedule, use get_schedule to get the latest data before answering
-- Be concise in responses`;
+- Be concise in responses — ask clarifying questions if you need arrival times or travel durations`;
 }
 
 const chatTools = [
@@ -2303,7 +2418,7 @@ const chatTools = [
 async function executeToolCall(name, input) {
     switch (name) {
         case 'get_schedule':
-            return { success: true, result: DataProvider._data.events };
+            return { success: true, result: DataProvider._data.events, timeline: buildScheduleTimeline() };
 
         case 'get_event_details': {
             const evt = DataProvider._data.events.find(e => e.id === input.event_id);
@@ -2561,6 +2676,23 @@ const ChatUI = {
         if (el) el.remove();
     },
 
+    addToolBubble(title, body, success) {
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-tool-bubble' + (success === false ? ' tool-error' : success === true ? ' tool-ok' : '');
+        const header = document.createElement('div');
+        header.className = 'chat-tool-header';
+        header.textContent = title;
+        bubble.appendChild(header);
+        if (body) {
+            const pre = document.createElement('pre');
+            pre.className = 'chat-tool-body';
+            pre.textContent = body;
+            bubble.appendChild(pre);
+        }
+        this.messagesEl.appendChild(bubble);
+        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+    },
+
     async handleSend() {
         const text = this.inputEl.value.trim();
         if (!text || this.isSending) return;
@@ -2588,91 +2720,97 @@ const ChatUI = {
 
     async sendToAssistant() {
         this.addTypingIndicator();
-
-        // Build API messages from conversation history
-        const apiMessages = this.messages.map(m => ({ role: m.role, content: m.content }));
         const systemPrompt = buildSystemPrompt();
+        const MAX_TOOL_ROUNDS = 10;
 
-        let streamBubble = null;
-        let streamText = '';
-        const allToolUses = [];
+        for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            let streamBubble = null;
+            let streamText = '';
+            const toolUses = [];
 
-        await AnthropicClient.sendMessageStream(
-            apiMessages,
-            chatTools,
-            systemPrompt,
-            // onDelta — stream text into bubble
-            (delta) => {
-                if (!streamBubble) {
+            try {
+                await AnthropicClient.sendMessageStream(
+                    this.messages.map(m => ({ role: m.role, content: m.content })),
+                    chatTools,
+                    systemPrompt,
+                    (delta) => {
+                        if (!streamBubble) {
+                            this.removeTypingIndicator();
+                            streamBubble = document.createElement('div');
+                            streamBubble.className = 'chat-bubble chat-bubble-assistant';
+                            this.messagesEl.appendChild(streamBubble);
+                        }
+                        streamText += delta;
+                        streamBubble.textContent = streamText;
+                        this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
+                    },
+                    (tus) => { toolUses.push(...tus); },
+                    () => {}
+                );
+            } catch (err) {
+                console.error(`Chat API error (round ${round + 1}):`, err);
+                this.removeTypingIndicator();
+                this.addMessage('assistant', `Error (round ${round + 1}): ${err.message || err}`);
+                return;
+            }
+
+            if (toolUses.length === 0) {
+                if (streamText) {
+                    this.messages.push({ role: 'assistant', content: streamText });
+                } else if (round === 0) {
+                    // No text and no tools on first round — empty response
                     this.removeTypingIndicator();
-                    streamBubble = document.createElement('div');
-                    streamBubble.className = 'chat-bubble chat-bubble-assistant';
-                    this.messagesEl.appendChild(streamBubble);
+                    this.addMessage('assistant', '[Empty response from API — try again]');
                 }
-                streamText += delta;
-                streamBubble.textContent = streamText;
-                this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
-            },
-            // onToolUse
-            (toolUses) => { allToolUses.push(...toolUses); },
-            // onDone
-            () => {}
-        );
+                break;
+            }
 
-        // If there were tool uses, execute them and get follow-up
-        if (allToolUses.length > 0) {
-            // Add assistant message with tool uses to history
+            // Has tool calls — add assistant message, execute tools, loop again
             const assistantContent = [];
             if (streamText) assistantContent.push({ type: 'text', text: streamText });
-            allToolUses.forEach(tu => assistantContent.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input }));
+            toolUses.forEach(tu => assistantContent.push({ type: 'tool_use', id: tu.id, name: tu.name, input: tu.input }));
             this.messages.push({ role: 'assistant', content: assistantContent });
 
-            // Execute tools and collect results
             const toolResults = [];
-            for (const tu of allToolUses) {
-                const result = await executeToolCall(tu.name, tu.input);
-                toolResults.push({
-                    type: 'tool_result',
-                    tool_use_id: tu.id,
-                    content: JSON.stringify(result),
-                });
+            for (const tu of toolUses) {
+                // Show debug bubble for tool call
+                const inputSummary = JSON.stringify(tu.input, null, 2);
+                this.addToolBubble(`\u2192 ${tu.name}`, inputSummary);
+
+                try {
+                    const result = await executeToolCall(tu.name, tu.input);
+                    const resultJson = JSON.stringify(result);
+                    toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: tu.id,
+                        content: resultJson,
+                    });
+                    // Show debug bubble for tool result
+                    const short = resultJson.length > 300 ? resultJson.slice(0, 300) + '...' : resultJson;
+                    this.addToolBubble(`\u2190 ${tu.name}`, short, result.success);
+                } catch (toolErr) {
+                    console.error(`Tool error (${tu.name}):`, toolErr);
+                    this.addToolBubble(`\u2190 ${tu.name}`, `CRASH: ${toolErr.message}`, false);
+                    toolResults.push({
+                        type: 'tool_result',
+                        tool_use_id: tu.id,
+                        content: JSON.stringify({ success: false, error: `Tool crashed: ${toolErr.message}` }),
+                        is_error: true,
+                    });
+                }
             }
             this.messages.push({ role: 'user', content: toolResults });
 
-            // Get follow-up response
-            streamBubble = null;
-            streamText = '';
+            // Show typing indicator for next round
             if (!this.messagesEl.querySelector('#chatTyping')) {
                 this.addTypingIndicator();
             }
+        }
 
-            await AnthropicClient.sendMessageStream(
-                this.messages.map(m => ({ role: m.role, content: m.content })),
-                chatTools,
-                systemPrompt,
-                (delta) => {
-                    if (!streamBubble) {
-                        this.removeTypingIndicator();
-                        streamBubble = document.createElement('div');
-                        streamBubble.className = 'chat-bubble chat-bubble-assistant';
-                        this.messagesEl.appendChild(streamBubble);
-                    }
-                    streamText += delta;
-                    streamBubble.textContent = streamText;
-                    this.messagesEl.scrollTop = this.messagesEl.scrollHeight;
-                },
-                () => {},
-                () => {}
-            );
-
-            if (streamText) {
-                this.messages.push({ role: 'assistant', content: streamText });
-            }
-        } else {
-            // Simple text response
-            if (streamText) {
-                this.messages.push({ role: 'assistant', content: streamText });
-            }
+        // If we exhausted all rounds
+        if (this.messagesEl.querySelector('#chatTyping')) {
+            this.removeTypingIndicator();
+            this.addMessage('assistant', '[Stopped — too many tool calls in a row. Try a simpler request.]');
         }
 
         this.removeTypingIndicator();
