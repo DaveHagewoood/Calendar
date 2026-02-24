@@ -542,15 +542,25 @@ function renderDayCells(container, startDayIndex, numDays) {
         dayNumber.textContent = dayOfMonth === 1 ? `${dayOfMonth} ${monthAbbr}` : dayOfMonth;
         cell.appendChild(dayNumber);
 
-        // Click handler: undefined days → new event, stay/travel bars → edit event
-        const dayTime = date.getTime();
+        // Click handler: analyze all segments on this day
         cell.addEventListener('click', () => {
             if (CalendarState.wasDrag) return;
-            if (isUndefinedTime(dayTime)) {
+            const segments = getSegmentsForDay(date);
+            const totalItems = segments.stays.length + segments.travel.length + segments.gaps.length;
+
+            if (totalItems === 0) {
                 openEventPanel(date);
+            } else if (totalItems === 1) {
+                if (segments.stays.length === 1) {
+                    const evt = DataProvider._data.events.find(e => e.id === segments.stays[0].eventId);
+                    if (evt) openEventPanelForEdit(evt);
+                } else if (segments.gaps.length === 1) {
+                    openEventPanel(date);
+                } else if (segments.travel.length === 1) {
+                    openTravelPanel(segments.travel[0]);
+                }
             } else {
-                const evt = findEventAtTime(dayTime);
-                if (evt) openEventPanelForEdit(evt);
+                showDayActionSheet(date, segments);
             }
         });
 
@@ -725,29 +735,6 @@ function renderLabels(container, stays, clipStart, clipEnd) {
 }
 
 // Render travel icons for a time range
-function renderTravelIcons(container, travel, clipStart, clipEnd) {
-    travel.forEach(t => {
-        if (t.end <= clipStart || t.start >= clipEnd) return;
-
-        const center = (t.start + t.end) / 2;
-        if (center < clipStart || center >= clipEnd) return;
-
-        const centerPos = getGridPosition(center);
-
-        const icon = document.createElement('div');
-        icon.className = 'travel-icon';
-        icon.innerHTML = '<i data-lucide="plus"></i>';
-        icon.style.position = 'absolute';
-        icon.style.left = colToX(centerPos.col + centerPos.dayFraction) + 'px';
-        icon.style.top = (rowToY(centerPos.row) + CELL_SIZE / 2) + 'px';
-        icon.addEventListener('click', (e) => {
-            e.stopPropagation();
-            openTravelPanel(t);
-        });
-
-        container.appendChild(icon);
-    });
-}
 
 // ============================================================
 // Chunk rendering
@@ -780,8 +767,6 @@ function renderChunk(chunkIndex) {
     renderTravel(fragment, CalendarState.travel, chunkStartTime, chunkEndTime);
     renderLabels(fragment, CalendarState.stays, chunkStartTime, chunkEndTime);
     renderDayCells(fragment, startDayIndex, CHUNK_DAYS);
-    renderTravelIcons(fragment, CalendarState.travel, chunkStartTime, chunkEndTime);
-
     // Wrap in a container div for easy removal
     const chunkEl = document.createElement('div');
     chunkEl.className = 'chunk';
@@ -1039,11 +1024,9 @@ function formatTime(timestamp) {
 // Check if a timestamp falls in an undefined period (not in any stay or travel)
 function isUndefinedTime(timestamp) {
     const { stays, travel } = CalendarState;
-    // In a stay?
     for (const s of stays) {
         if (timestamp >= s.start && timestamp < s.end) return false;
     }
-    // In travel?
     for (const t of travel) {
         if (timestamp >= t.start && timestamp < t.end) return false;
     }
@@ -1055,12 +1038,10 @@ function findEventAtTime(timestamp) {
         const arrive = parseTimestamp(evt.arrive);
         let depart = evt.depart ? parseTimestamp(evt.depart) : null;
         if (!depart) {
-            // If no depart, treat as end of arrival day
             const d = new Date(arrive);
             d.setHours(23, 59, 59, 0);
             depart = d.getTime();
         }
-        // Include travel time
         let start = arrive;
         if (evt.travel && evt.travel.legs) {
             const totalMin = evt.travel.legs.reduce((sum, l) => sum + (l.duration || 0), 0);
@@ -1071,6 +1052,47 @@ function findEventAtTime(timestamp) {
         }
     }
     return null;
+}
+
+// Collect all segments (stays, travel, gaps) that touch a given day
+function getSegmentsForDay(date) {
+    const dayStart = new Date(date);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(date);
+    dayEnd.setHours(23, 59, 59, 999);
+    const ds = dayStart.getTime();
+    const de = dayEnd.getTime();
+
+    const { stays, travel } = CalendarState;
+
+    const dayStays = stays
+        .filter(s => s.start < de && s.end > ds)
+        .map(s => ({ ...s, clipStart: Math.max(s.start, ds), clipEnd: Math.min(s.end, de) }));
+
+    const dayTravel = travel
+        .filter(t => t.start < de && t.end > ds)
+        .map(t => ({ ...t, clipStart: Math.max(t.start, ds), clipEnd: Math.min(t.end, de) }));
+
+    // Compute gaps: time within the day not covered by any stay or travel
+    const covered = [];
+    dayStays.forEach(s => covered.push({ start: s.clipStart, end: s.clipEnd }));
+    dayTravel.forEach(t => covered.push({ start: t.clipStart, end: t.clipEnd }));
+    covered.sort((a, b) => a.start - b.start);
+
+    const gaps = [];
+    let cursor = ds;
+    const MIN_GAP = 60000; // ignore gaps shorter than 1 minute
+    for (const seg of covered) {
+        if (seg.start - cursor >= MIN_GAP) {
+            gaps.push({ start: cursor, end: seg.start });
+        }
+        cursor = Math.max(cursor, seg.end);
+    }
+    if (de - cursor >= MIN_GAP) {
+        gaps.push({ start: cursor, end: de });
+    }
+
+    return { stays: dayStays, travel: dayTravel, gaps };
 }
 
 function getLocationColor(name) {
@@ -1130,6 +1152,110 @@ function openTravelPanel(travelSeg) {
 function closeTripPanel() {
     CalendarState.tripBackdrop.classList.remove('open');
     CalendarState.tripPanel.classList.remove('open');
+}
+
+// ============================================================
+// Day Action Sheet (disambiguation when clicking a day with multiple segments)
+// ============================================================
+function createDayActionSheet() {
+    const container = document.querySelector('.mobile-container');
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'day-sheet-backdrop';
+    backdrop.addEventListener('click', closeDayActionSheet);
+
+    const sheet = document.createElement('div');
+    sheet.className = 'day-sheet';
+    sheet.innerHTML = `
+        <div class="day-sheet-handle"></div>
+        <div class="day-sheet-title" id="daySheetTitle"></div>
+        <div class="day-sheet-items" id="daySheetItems"></div>
+        <button class="day-sheet-cancel" id="daySheetCancel">Cancel</button>
+    `;
+
+    container.appendChild(backdrop);
+    container.appendChild(sheet);
+
+    sheet.querySelector('#daySheetCancel').addEventListener('click', closeDayActionSheet);
+
+    CalendarState.daySheet = sheet;
+    CalendarState.daySheetBackdrop = backdrop;
+}
+
+function showDayActionSheet(date, segments) {
+    const { daySheet, daySheetBackdrop } = CalendarState;
+    const titleEl = daySheet.querySelector('#daySheetTitle');
+    const itemsEl = daySheet.querySelector('#daySheetItems');
+
+    titleEl.textContent = date.toLocaleDateString('en-US', {
+        weekday: 'long', month: 'short', day: 'numeric'
+    });
+    itemsEl.innerHTML = '';
+
+    const fmtTime = (ms) => {
+        const d = new Date(ms);
+        return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
+    };
+
+    // Collect all items and sort by start time
+    const items = [];
+
+    segments.stays.forEach(s => {
+        const loc = CalendarState.locationMap[s.location];
+        const label = loc ? loc.label : s.location;
+        const color = loc ? loc.color : '#666';
+        const evt = DataProvider._data.events.find(e => e.id === s.eventId);
+        let name = label;
+        if (evt && evt.stay && evt.stay.name) name += ` \u00b7 ${evt.stay.name}`;
+        items.push({
+            start: s.clipStart,
+            html: `<span class="day-sheet-dot" style="background:${color}"></span>
+                   <span class="day-sheet-label">${name}</span>
+                   <span class="day-sheet-time">${fmtTime(s.clipStart)} – ${fmtTime(s.clipEnd)}</span>`,
+            action: () => { closeDayActionSheet(); if (evt) openEventPanelForEdit(evt); }
+        });
+    });
+
+    segments.travel.forEach(t => {
+        const loc = CalendarState.locationMap[t.location];
+        const label = loc ? loc.label : t.location;
+        const modeIcon = t.legs && t.legs[0] ? (transportModes[t.legs[0].mode] || {}).icon || '✈' : '✈';
+        items.push({
+            start: t.clipStart,
+            html: `<span class="day-sheet-icon">${modeIcon}</span>
+                   <span class="day-sheet-label">Travel to ${label}</span>
+                   <span class="day-sheet-time">${fmtTime(t.clipStart)} – ${fmtTime(t.clipEnd)}</span>`,
+            action: () => { closeDayActionSheet(); openTravelPanel(t); }
+        });
+    });
+
+    segments.gaps.forEach(g => {
+        items.push({
+            start: g.start,
+            html: `<span class="day-sheet-icon">+</span>
+                   <span class="day-sheet-label">Add new trip</span>
+                   <span class="day-sheet-time">${fmtTime(g.start)} – ${fmtTime(g.end)}</span>`,
+            action: () => { closeDayActionSheet(); openEventPanel(date, new Date(g.start)); }
+        });
+    });
+
+    items.sort((a, b) => a.start - b.start);
+
+    items.forEach(item => {
+        const row = document.createElement('div');
+        row.className = 'day-sheet-item';
+        row.innerHTML = item.html;
+        row.addEventListener('click', item.action);
+        itemsEl.appendChild(row);
+    });
+
+    daySheetBackdrop.classList.add('open');
+    daySheet.classList.add('open');
+}
+
+function closeDayActionSheet() {
+    CalendarState.daySheetBackdrop.classList.remove('open');
+    CalendarState.daySheet.classList.remove('open');
 }
 
 // ============================================================
@@ -1805,8 +1931,8 @@ function updateDepartDisplay() {
     const isEstimated = pendingEvent.estimated.includes('depart');
 
     if (!pendingEvent.depart) {
-        dateEl.textContent = 'Not set';
-        dateEl.classList.add('event-field-empty');
+        dateEl.innerHTML = '<span class="event-field-estimated">~End of day</span>';
+        dateEl.classList.remove('event-field-empty');
         timeEl.textContent = '';
     } else {
         dateEl.classList.remove('event-field-empty');
@@ -1823,12 +1949,12 @@ function updateDepartDisplay() {
     validateFieldsInline();
 }
 
-function openEventPanel(date) {
+function openEventPanel(date, arriveOverride) {
     const { eventPanel, eventBackdrop } = CalendarState;
 
-    // Initialize pending event with noon arrival, end-of-day departure (both estimated)
-    const arriveDate = new Date(date);
-    arriveDate.setHours(12, 0, 0, 0);
+    // Initialize pending event — use arriveOverride if provided, otherwise noon
+    const arriveDate = arriveOverride ? new Date(arriveOverride) : new Date(date);
+    if (!arriveOverride) arriveDate.setHours(12, 0, 0, 0);
     const departDate = new Date(date);
     departDate.setHours(23, 0, 0, 0);
     pendingEvent = {
@@ -2844,6 +2970,7 @@ async function initCalendar() {
     // Create panels and UI systems
     createTripPanel();
     createEventPanel();
+    createDayActionSheet();
     ToastManager.init(document.querySelector('.mobile-container'));
 
     // Calculate initial range: 13 weeks back from today + 52 weeks forward
