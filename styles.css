@@ -1206,8 +1206,8 @@ body {
     color: #888;
 }
 
-/* Day Action Sheet */
-.day-sheet-backdrop {
+/* Day Zoom View */
+.day-zoom-backdrop {
     position: absolute;
     inset: 0;
     background: rgba(0, 0, 0, 0.5);
@@ -1217,17 +1217,18 @@ body {
     transition: opacity 0.3s ease;
     display: none;
 }
-.day-sheet-backdrop.open {
+.day-zoom-backdrop.open {
     display: block;
     opacity: 1;
     pointer-events: auto;
 }
-.day-sheet {
+.day-zoom {
     position: absolute;
     bottom: 0;
     left: 0;
     right: 0;
-    background: #222;
+    max-height: 85%;
+    background: #1a1a2e;
     border-radius: 16px 16px 0 0;
     z-index: 51;
     transform: translateY(100%);
@@ -1236,76 +1237,135 @@ body {
     flex-direction: column;
     overflow: hidden;
     pointer-events: none;
-    padding-bottom: env(safe-area-inset-bottom, 16px);
+    padding-bottom: env(safe-area-inset-bottom, 8px);
 }
-.day-sheet.open {
+.day-zoom.open {
     display: flex;
     transform: translateY(0);
     pointer-events: auto;
 }
-.day-sheet-handle {
-    width: 36px;
-    height: 4px;
-    background: #555;
-    border-radius: 2px;
-    margin: 10px auto 0;
-    flex-shrink: 0;
-}
-.day-sheet-title {
-    font-size: 15px;
-    font-weight: 600;
-    color: #eee;
-    padding: 12px 20px 8px;
-}
-.day-sheet-items {
-    padding: 0 12px;
-}
-.day-sheet-item {
+.day-zoom-header {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 12px 8px;
-    border-radius: 10px;
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.day-sheet-item:active {
-    background: rgba(255, 255, 255, 0.08);
-}
-.day-sheet-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
+    justify-content: space-between;
+    padding: 16px 16px 8px;
     flex-shrink: 0;
 }
-.day-sheet-icon {
-    width: 10px;
-    text-align: center;
-    flex-shrink: 0;
-    font-size: 14px;
+.day-zoom-title {
+    font-size: 16px;
+    font-weight: 600;
+    color: #eee;
 }
-.day-sheet-label {
-    flex: 1;
-    font-size: 14px;
-    color: #ddd;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.day-sheet-time {
-    font-size: 12px;
+.day-zoom-close-btn {
+    background: none;
+    border: none;
     color: #888;
-    flex-shrink: 0;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0 4px;
+    line-height: 1;
 }
-.day-sheet-item::after {
-    content: '›';
-    font-size: 18px;
-    color: #555;
-    flex-shrink: 0;
-    margin-left: 4px;
+/* Segments container — horizontal columns like the calendar day cell */
+.day-zoom-segments {
+    display: flex;
+    flex-direction: row;
+    padding: 0 12px;
+    flex: 1;
+    min-height: 120px;
+    overflow: hidden;
 }
-.day-sheet-cancel {
-    margin: 8px 12px 12px;
+/* Each segment — vertical column, proportionally sized by width */
+.day-zoom-segment {
+    min-width: 40px;
+    cursor: pointer;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: filter 0.15s;
+    overflow: hidden;
+}
+.day-zoom-segment:active {
+    filter: brightness(0.8);
+}
+/* Stay: solid location color fill, same as calendar */
+.day-zoom-segment.is-stay {
+    background-color: var(--fill-color, #666);
+}
+/* Estimated stay: striped overlay, same as calendar */
+.day-zoom-segment.is-stay.is-estimated {
+    background-image: repeating-linear-gradient(
+        -45deg,
+        transparent,
+        transparent 4px,
+        rgba(255, 255, 255, 0.08) 4px,
+        rgba(255, 255, 255, 0.08) 8px
+    );
+    background-color: var(--fill-color, #666);
+    opacity: 0.7;
+}
+/* Travel: animated arrows, same as calendar .travel-segment */
+.day-zoom-segment.is-travel {
+    background-image:
+        url("data:image/svg+xml,%3Csvg width='20' height='20' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M 8 5 L 13 10 L 8 15' stroke='%23ffffff' stroke-width='2' fill='none' stroke-linecap='round' stroke-linejoin='round' opacity='0.5'/%3E%3C/svg%3E"),
+        linear-gradient(135deg, #06b6d4 0%, #0891b2 100%);
+    background-repeat: repeat, no-repeat;
+    background-size: 20px 20px, 100% 100%;
+    animation: travel-animation 1.5s linear infinite;
+    opacity: 0.9;
+}
+/* Gap: same as calendar .location-undefined */
+.day-zoom-segment.is-gap {
+    background-color: #3a3a3a;
+    background-image: url("data:image/svg+xml,%3Csvg width='54' height='54' xmlns='http://www.w3.org/2000/svg'%3E%3Ctext x='27' y='35' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='600' fill='%23ffffff' opacity='0.12'%3E%3F%3C/text%3E%3C/svg%3E");
+    background-size: 54px 54px;
+    background-repeat: repeat;
+}
+/* Label overlaid on segment — like .location-label */
+.day-zoom-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.6);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    text-align: center;
+    pointer-events: none;
+    z-index: 1;
+    word-break: break-word;
+    line-height: 1.2;
+    padding: 0 4px;
+    max-width: 100%;
+}
+/* Time range below label */
+.day-zoom-time {
+    font-size: 9px;
+    color: rgba(255, 255, 255, 0.4);
+    text-align: center;
+    pointer-events: none;
+    z-index: 1;
+    margin-top: 2px;
+    padding: 0 2px;
+    word-break: break-word;
+    line-height: 1.2;
+}
+/* Edit icon — centered in column */
+.day-zoom-edit-icon {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.3);
+    color: rgba(255, 255, 255, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    pointer-events: none;
+    z-index: 1;
+    margin-top: 6px;
+}
+.day-zoom-close {
+    margin: 8px 12px;
     padding: 12px;
     background: #333;
     border: none;
@@ -1314,7 +1374,8 @@ body {
     font-size: 14px;
     font-weight: 500;
     cursor: pointer;
+    flex-shrink: 0;
 }
-.day-sheet-cancel:active {
+.day-zoom-close:active {
     background: #444;
 }

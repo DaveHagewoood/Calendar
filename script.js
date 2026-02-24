@@ -560,7 +560,7 @@ function renderDayCells(container, startDayIndex, numDays) {
                     openTravelPanel(segments.travel[0]);
                 }
             } else {
-                showDayActionSheet(date, segments);
+                showDayZoomView(date, segments);
             }
         });
 
@@ -1155,42 +1155,45 @@ function closeTripPanel() {
 }
 
 // ============================================================
-// Day Action Sheet (disambiguation when clicking a day with multiple segments)
+// Day Zoom View (disambiguation when clicking a day with multiple segments)
 // ============================================================
-function createDayActionSheet() {
+function createDayZoomView() {
     const container = document.querySelector('.mobile-container');
 
     const backdrop = document.createElement('div');
-    backdrop.className = 'day-sheet-backdrop';
-    backdrop.addEventListener('click', closeDayActionSheet);
+    backdrop.className = 'day-zoom-backdrop';
+    backdrop.addEventListener('click', closeDayZoomView);
 
-    const sheet = document.createElement('div');
-    sheet.className = 'day-sheet';
-    sheet.innerHTML = `
-        <div class="day-sheet-handle"></div>
-        <div class="day-sheet-title" id="daySheetTitle"></div>
-        <div class="day-sheet-items" id="daySheetItems"></div>
-        <button class="day-sheet-cancel" id="daySheetCancel">Cancel</button>
+    const panel = document.createElement('div');
+    panel.className = 'day-zoom';
+    panel.innerHTML = `
+        <div class="day-zoom-header">
+            <span class="day-zoom-title" id="dayZoomTitle"></span>
+            <button class="day-zoom-close-btn" id="dayZoomCloseBtn">&times;</button>
+        </div>
+        <div class="day-zoom-segments" id="dayZoomSegments"></div>
+        <button class="day-zoom-close" id="dayZoomClose">Close</button>
     `;
 
     container.appendChild(backdrop);
-    container.appendChild(sheet);
+    container.appendChild(panel);
 
-    sheet.querySelector('#daySheetCancel').addEventListener('click', closeDayActionSheet);
+    panel.querySelector('#dayZoomCloseBtn').addEventListener('click', closeDayZoomView);
+    panel.querySelector('#dayZoomClose').addEventListener('click', closeDayZoomView);
 
-    CalendarState.daySheet = sheet;
-    CalendarState.daySheetBackdrop = backdrop;
+    CalendarState.dayZoom = panel;
+    CalendarState.dayZoomBackdrop = backdrop;
 }
 
-function showDayActionSheet(date, segments) {
-    const { daySheet, daySheetBackdrop } = CalendarState;
-    const titleEl = daySheet.querySelector('#daySheetTitle');
-    const itemsEl = daySheet.querySelector('#daySheetItems');
+function showDayZoomView(date, segments) {
+    const { dayZoom, dayZoomBackdrop } = CalendarState;
+    const titleEl = dayZoom.querySelector('#dayZoomTitle');
+    const segmentsEl = dayZoom.querySelector('#dayZoomSegments');
 
     titleEl.textContent = date.toLocaleDateString('en-US', {
         weekday: 'long', month: 'short', day: 'numeric'
     });
-    itemsEl.innerHTML = '';
+    segmentsEl.innerHTML = '';
 
     const fmtTime = (ms) => {
         const d = new Date(ms);
@@ -1207,55 +1210,92 @@ function showDayActionSheet(date, segments) {
         const evt = DataProvider._data.events.find(e => e.id === s.eventId);
         let name = label;
         if (evt && evt.stay && evt.stay.name) name += ` \u00b7 ${evt.stay.name}`;
+        const estimated = s.estimated && s.estimated.length > 0;
         items.push({
             start: s.clipStart,
-            html: `<span class="day-sheet-dot" style="background:${color}"></span>
-                   <span class="day-sheet-label">${name}</span>
-                   <span class="day-sheet-time">${fmtTime(s.clipStart)} – ${fmtTime(s.clipEnd)}</span>`,
-            action: () => { closeDayActionSheet(); if (evt) openEventPanelForEdit(evt); }
+            duration: s.clipEnd - s.clipStart,
+            type: 'stay',
+            color, estimated,
+            label: name,
+            time: `${fmtTime(s.clipStart)} – ${fmtTime(s.clipEnd)}`,
+            action: () => { closeDayZoomView(); if (evt) openEventPanelForEdit(evt); }
         });
     });
 
     segments.travel.forEach(t => {
         const loc = CalendarState.locationMap[t.location];
         const label = loc ? loc.label : t.location;
-        const modeIcon = t.legs && t.legs[0] ? (transportModes[t.legs[0].mode] || {}).icon || '✈' : '✈';
         items.push({
             start: t.clipStart,
-            html: `<span class="day-sheet-icon">${modeIcon}</span>
-                   <span class="day-sheet-label">Travel to ${label}</span>
-                   <span class="day-sheet-time">${fmtTime(t.clipStart)} – ${fmtTime(t.clipEnd)}</span>`,
-            action: () => { closeDayActionSheet(); openTravelPanel(t); }
+            duration: t.clipEnd - t.clipStart,
+            type: 'travel',
+            label: `\u2192 ${label}`,
+            time: `${fmtTime(t.clipStart)} – ${fmtTime(t.clipEnd)}`,
+            action: () => { closeDayZoomView(); openTravelPanel(t); }
         });
     });
 
     segments.gaps.forEach(g => {
         items.push({
             start: g.start,
-            html: `<span class="day-sheet-icon">+</span>
-                   <span class="day-sheet-label">Add new trip</span>
-                   <span class="day-sheet-time">${fmtTime(g.start)} – ${fmtTime(g.end)}</span>`,
-            action: () => { closeDayActionSheet(); openEventPanel(date, new Date(g.start)); }
+            duration: g.end - g.start,
+            type: 'gap',
+            label: '',
+            time: `${fmtTime(g.start)} – ${fmtTime(g.end)}`,
+            action: () => { closeDayZoomView(); openEventPanel(date, new Date(g.start)); }
         });
     });
 
     items.sort((a, b) => a.start - b.start);
 
+    // Calculate proportional heights
+    const totalDuration = items.reduce((sum, it) => sum + it.duration, 0);
+
     items.forEach(item => {
-        const row = document.createElement('div');
-        row.className = 'day-sheet-item';
-        row.innerHTML = item.html;
-        row.addEventListener('click', item.action);
-        itemsEl.appendChild(row);
+        const pct = totalDuration > 0 ? (item.duration / totalDuration) * 100 : 100 / items.length;
+        const bar = document.createElement('div');
+        bar.className = 'day-zoom-segment';
+        bar.style.flex = `${pct} 0 0`;
+
+        if (item.type === 'stay') {
+            bar.classList.add('is-stay');
+            if (item.estimated) bar.classList.add('is-estimated');
+            bar.style.setProperty('--fill-color', item.color);
+        } else if (item.type === 'travel') {
+            bar.classList.add('is-travel');
+        } else {
+            bar.classList.add('is-gap');
+        }
+
+        // Overlay label (like calendar location-label)
+        const labelEl = document.createElement('div');
+        labelEl.className = 'day-zoom-label';
+        labelEl.textContent = item.label;
+        bar.appendChild(labelEl);
+
+        // Time range
+        const timeEl = document.createElement('div');
+        timeEl.className = 'day-zoom-time';
+        timeEl.textContent = item.time;
+        bar.appendChild(timeEl);
+
+        // Edit icon (centered)
+        const icon = document.createElement('div');
+        icon.className = 'day-zoom-edit-icon';
+        icon.textContent = item.type === 'gap' ? '+' : '\u270E';
+        bar.appendChild(icon);
+
+        bar.addEventListener('click', item.action);
+        segmentsEl.appendChild(bar);
     });
 
-    daySheetBackdrop.classList.add('open');
-    daySheet.classList.add('open');
+    dayZoomBackdrop.classList.add('open');
+    dayZoom.classList.add('open');
 }
 
-function closeDayActionSheet() {
-    CalendarState.daySheetBackdrop.classList.remove('open');
-    CalendarState.daySheet.classList.remove('open');
+function closeDayZoomView() {
+    CalendarState.dayZoomBackdrop.classList.remove('open');
+    CalendarState.dayZoom.classList.remove('open');
 }
 
 // ============================================================
@@ -2970,7 +3010,7 @@ async function initCalendar() {
     // Create panels and UI systems
     createTripPanel();
     createEventPanel();
-    createDayActionSheet();
+    createDayZoomView();
     ToastManager.init(document.querySelector('.mobile-container'));
 
     // Calculate initial range: 13 weeks back from today + 52 weeks forward
