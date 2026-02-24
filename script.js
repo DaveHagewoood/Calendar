@@ -3047,6 +3047,18 @@ async function initCalendar() {
     // Initialize chat UI (split layout — always visible)
     ChatUI.init();
 
+    // Render Lucide icons in top bar
+    lucide.createIcons({ nodes: [document.getElementById('topBar')] });
+
+    // Tab switching (visual toggle only — action view TBD)
+    const tabBtns = document.querySelectorAll('.top-bar-btn[data-tab]');
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            tabBtns.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+        });
+    });
+
     // Set up scroll handler
     CalendarState.viewport.addEventListener('scroll', () => {
         if (scrollRAF) return;

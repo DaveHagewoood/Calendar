@@ -42,6 +42,47 @@ body {
     }
 }
 
+/* Top navigation bar */
+.top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 8px 12px;
+    background: #1a1a2e;
+    flex-shrink: 0;
+    z-index: 20;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.top-bar-left,
+.top-bar-right {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+.top-bar-btn {
+    background: none;
+    border: none;
+    color: #555;
+    cursor: pointer;
+    padding: 6px 10px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: color 0.2s, background 0.2s;
+}
+.top-bar-btn svg {
+    width: 20px;
+    height: 20px;
+}
+.top-bar-btn:active {
+    background: rgba(255, 255, 255, 0.08);
+}
+.top-bar-btn.active {
+    color: #eee;
+    background: rgba(255, 255, 255, 0.08);
+}
+
 .calendar-viewport {
     width: 100%;
     flex: 1;

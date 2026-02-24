@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(python3 -c \" import sys, json lines = [] for line in sys.stdin: line = line.strip\\(\\) if line: try: obj = json.loads\\(line\\) role = obj.get\\(''type'',''''\\) if role == ''assistant'': # Get text content for block in obj.get\\(''message'',{}\\).get\\(''content'',[]\\): if block.get\\(''type''\\) == ''text'': lines.append\\(f''ASSISTANT: {block[\"\"text\"\"][:500]}''\\) elif block.get\\(''type''\\) == ''tool_use'': lines.append\\(f''TOOL_USE: {block[\"\"name\"\"]} -> {json.dumps\\(block.get\\(\"\"input\"\",{}\\)\\)[:300]}''\\) elif role == ''human'': for block in obj.get\\(''message'',{}\\).get\\(''content'',[]\\): if isinstance\\(block, dict\\) and block.get\\(''type''\\) == ''text'': lines.append\\(f''HUMAN: {block[\"\"text\"\"][:300]}''\\) elif isinstance\\(block, dict\\) and block.get\\(''type''\\) == ''tool_result'': lines.append\\(f''TOOL_RESULT: \\(id={block.get\\(\"\"tool_use_id\"\",\"\"\"\"\\)[:20]}\\) {str\\(block.get\\(\"\"content\"\",\"\"\"\"\\)\\)[:200]}''\\) except: pass for l in lines[-60:]: print\\(l\\) \")",
+      "Bash(node -e:*)",
+      "Bash(node:*)",
+      "Bash(npx netlify deploy:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:docs.anthropic.com)"
+    ]
+  }
+}

@@ -18,6 +18,21 @@
 </head>
 <body>
     <div class="mobile-container">
+        <div class="top-bar" id="topBar">
+            <div class="top-bar-left">
+                <button class="top-bar-btn active" id="tabCalendar" data-tab="calendar">
+                    <i data-lucide="calendar"></i>
+                </button>
+                <button class="top-bar-btn" id="tabAction" data-tab="action">
+                    <i data-lucide="zap"></i>
+                </button>
+            </div>
+            <div class="top-bar-right">
+                <button class="top-bar-btn" id="btnSettings">
+                    <i data-lucide="settings"></i>
+                </button>
+            </div>
+        </div>
         <div class="calendar-viewport" id="calendarViewport">
             <div class="calendar-canvas" id="calendarCanvas">
                 <!-- All calendar elements are absolutely positioned children -->
