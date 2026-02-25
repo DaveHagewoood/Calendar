@@ -55,7 +55,7 @@ function getNextPaletteColor(existingLocations) {
     return COLOR_PALETTE[existingLocations.length % COLOR_PALETTE.length];
 }
 
-function ensureLocation(nameOrLabel) {
+function ensureLocation(nameOrLabel, options = {}) {
     const name = slugify(nameOrLabel);
     if (CalendarState.locationMap[name]) {
         return CalendarState.locationMap[name];
@@ -64,6 +64,7 @@ function ensureLocation(nameOrLabel) {
     const label = nameOrLabel.replace(/\b\w/g, c => c.toUpperCase());
     const color = getNextPaletteColor(DataProvider._data.locations);
     const newLoc = { name, label, color };
+    if (options.mobile) newLoc.mobile = true;
     DataProvider._data.locations.push(newLoc);
     CalendarState.locations = DataProvider._data.locations;
     CalendarState.locationMap[name] = newLoc;
@@ -720,8 +721,8 @@ function renderLabels(container, stays, clipStart, clipEnd) {
                 'location-label' + (isNarrow ? ' location-label-narrow' : ''),
                 colToX(startCol), rowToY(row), colSpan * CELL_SIZE, CELL_SIZE
             );
-            // Show "City · Accommodation" when stay.name exists
-            let labelText = loc.label;
+            // Show "⚓ City · Accommodation" for mobile, "City · Accommodation" otherwise
+            let labelText = loc.mobile ? '⚓ ' + loc.label : loc.label;
             if (stay.eventId) {
                 const rawEvt = DataProvider._data.events.find(e => e.id === stay.eventId);
                 if (rawEvt && rawEvt.stay && rawEvt.stay.name) {
@@ -1208,7 +1209,7 @@ function showDayZoomView(date, segments) {
         const label = loc ? loc.label : s.location;
         const color = loc ? loc.color : '#666';
         const evt = DataProvider._data.events.find(e => e.id === s.eventId);
-        let name = label;
+        let name = (loc && loc.mobile ? '⚓ ' : '') + label;
         if (evt && evt.stay && evt.stay.name) name += ` \u00b7 ${evt.stay.name}`;
         const estimated = s.estimated && s.estimated.length > 0;
         items.push({
@@ -1348,8 +1349,20 @@ function createEventPanel() {
             </div>
             <div class="event-field" id="eventLocationField">
                 <div class="event-field-label">Location</div>
-                <div class="event-field-value event-field-empty" id="eventLocationValue">Tap to set destination</div>
-                <div class="location-picker" id="locationPicker"></div>
+                <div class="location-autocomplete" id="locationAutocomplete">
+                    <input type="text" class="location-input" id="locationInput"
+                           placeholder="Type a destination..." autocomplete="off">
+                    <div class="location-suggestions" id="locationSuggestions"></div>
+                </div>
+                <div class="location-selected" id="locationSelected" style="display:none">
+                    <span class="location-dot" id="locationSelectedDot"></span>
+                    <span id="locationSelectedLabel"></span>
+                    <button class="location-change-btn" id="locationChangeBtn">Change</button>
+                </div>
+                <div class="mobile-toggle" id="mobileToggle" style="display:none">
+                    <label><input type="checkbox" id="mobileCheck">
+                    <span>⚓ Mobile location (yacht, RV)</span></label>
+                </div>
             </div>
             <div class="event-field" id="eventStayField" style="display:none">
                 <div class="event-field-label">Accommodation</div>
@@ -1384,8 +1397,34 @@ function createEventPanel() {
     container.appendChild(panel);
 
     panel.querySelector('#eventPanelClose').addEventListener('click', closeEventPanel);
-    panel.querySelector('#eventLocationField').addEventListener('click', toggleLocationPicker);
     panel.querySelector('#eventSaveBtn').addEventListener('click', saveEvent);
+
+    // Location autocomplete wiring
+    const locInput = panel.querySelector('#locationInput');
+    locInput.addEventListener('input', () => renderLocationSuggestions(locInput.value));
+    locInput.addEventListener('focus', () => {
+        if (locInput.value.trim()) renderLocationSuggestions(locInput.value);
+    });
+    locInput.addEventListener('blur', () => {
+        setTimeout(() => {
+            panel.querySelector('#locationSuggestions').classList.remove('open');
+        }, 150);
+    });
+    locInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+            const q = locInput.value.trim();
+            if (!q) return;
+            const match = CalendarState.locations.find(loc =>
+                loc.label.toLowerCase() === q.toLowerCase() || loc.name === slugify(q)
+            );
+            selectLocation(match || ensureLocation(q));
+        }
+        if (e.key === 'Escape') {
+            panel.querySelector('#locationSuggestions').classList.remove('open');
+            locInput.blur();
+        }
+    });
+    panel.querySelector('#locationChangeBtn').addEventListener('click', showLocationInput);
 
     // Delete button with inline confirmation
     let deleteConfirmTimer = null;
@@ -1444,6 +1483,10 @@ function createEventPanel() {
 
     // Departure date — native picker; time — custom inline picker
     panel.querySelector('#eventDepartDate').addEventListener('click', () => {
+        // Seed with arrive date if depart is null so picker opens with a reasonable default
+        if (!pendingEvent.depart) {
+            panel.querySelector('#eventDepartDateInput').value = formatInputDate(pendingEvent.arrive);
+        }
         panel.querySelector('#eventDepartDateInput').showPicker();
     });
     panel.querySelector('#eventDepartTime').addEventListener('click', () => {
@@ -1456,7 +1499,11 @@ function createEventPanel() {
     panel.querySelector('#eventDepartDateInput').addEventListener('change', (e) => {
         if (!e.target.value || !pendingEvent) return;
         const [y, m, d] = e.target.value.split('-').map(Number);
-        pendingEvent.depart.setFullYear(y, m - 1, d);
+        if (pendingEvent.depart) {
+            pendingEvent.depart.setFullYear(y, m - 1, d);
+        } else {
+            pendingEvent.depart = new Date(y, m - 1, d, 23, 0, 0, 0);
+        }
         pendingEvent.estimated = pendingEvent.estimated.filter(f => f !== 'depart');
         updateDepartDisplay();
     });
@@ -1649,78 +1696,111 @@ function closeLegDetail() {
     panel.querySelector('#chainDoneBtn').addEventListener('click', () => confirmChain());
 }
 
-function buildLocationPicker() {
-    const picker = CalendarState.eventPanel.querySelector('#locationPicker');
-    picker.innerHTML = '';
-    CalendarState.locations.forEach(loc => {
-        const opt = document.createElement('div');
-        opt.className = 'location-option';
-        opt.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span><span>${loc.label}</span>`;
-        opt.addEventListener('click', (e) => {
-            e.stopPropagation();
-            selectLocation(loc);
-        });
-        picker.appendChild(opt);
-    });
-
-    // "Add new city" option
-    const addOpt = document.createElement('div');
-    addOpt.className = 'location-option';
-    addOpt.innerHTML = `<span class="location-dot" style="background:#666;border:1px dashed #aaa"></span><span style="color:#aaa">+ Add new city...</span>`;
-    addOpt.addEventListener('click', (e) => {
-        e.stopPropagation();
-        showNewCityInput(picker);
-    });
-    picker.appendChild(addOpt);
+function highlightMatch(text, query) {
+    const idx = text.toLowerCase().indexOf(query.toLowerCase());
+    if (idx === -1) return text;
+    return text.substring(0, idx) +
+        '<strong>' + text.substring(idx, idx + query.length) + '</strong>' +
+        text.substring(idx + query.length);
 }
 
-function showNewCityInput(picker) {
-    picker.innerHTML = `
-        <div style="padding: 8px 4px;">
-            <input type="text" class="leg-input" id="newCityInput" placeholder="City name (e.g. Barcelona)">
-            <div style="display:flex;gap:8px;margin-top:8px">
-                <button class="leg-cancel-btn" id="newCityCancel">Cancel</button>
-                <button class="leg-confirm-btn" id="newCityConfirm">Add</button>
-            </div>
-        </div>
-    `;
-    const input = picker.querySelector('#newCityInput');
-    setTimeout(() => input.focus(), 50);
-    picker.querySelector('#newCityCancel').addEventListener('click', () => buildLocationPicker());
-    const confirmCity = () => {
-        const label = input.value.trim();
-        if (!label) return;
-        const loc = ensureLocation(label);
-        selectLocation(loc);
-    };
-    picker.querySelector('#newCityConfirm').addEventListener('click', confirmCity);
-    input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') confirmCity();
+function renderLocationSuggestions(query) {
+    const container = CalendarState.eventPanel.querySelector('#locationSuggestions');
+    container.innerHTML = '';
+
+    const q = query.toLowerCase().trim();
+    if (!q) {
+        container.classList.remove('open');
+        return;
+    }
+
+    const matches = CalendarState.locations.filter(loc =>
+        loc.label.toLowerCase().includes(q) || loc.name.includes(q)
+    );
+
+    const exactMatch = CalendarState.locations.some(loc =>
+        loc.label.toLowerCase() === q || loc.name === slugify(q)
+    );
+
+    matches.forEach(loc => {
+        const opt = document.createElement('div');
+        opt.className = 'location-suggestion';
+        const mobileIcon = loc.mobile ? '<span class="mobile-badge">⚓</span>' : '';
+        opt.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span>` +
+            `<span>${highlightMatch(loc.label, q)}</span>` + mobileIcon;
+        opt.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            selectLocation(loc);
+        });
+        container.appendChild(opt);
     });
+
+    if (!exactMatch && q.length > 0) {
+        const createOpt = document.createElement('div');
+        createOpt.className = 'location-suggestion location-suggestion-create';
+        const displayLabel = q.replace(/\b\w/g, c => c.toUpperCase());
+        createOpt.innerHTML = `<span class="location-dot" style="background:#666;border:1px dashed #aaa"></span>` +
+            `<span>Create "<strong>${displayLabel}</strong>"</span>`;
+        createOpt.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            const loc = ensureLocation(q);
+            selectLocation(loc);
+        });
+        container.appendChild(createOpt);
+    }
+
+    container.classList.toggle('open', container.children.length > 0);
+}
+
+function showLocationInput() {
+    const panel = CalendarState.eventPanel;
+    panel.querySelector('#locationAutocomplete').style.display = '';
+    panel.querySelector('#locationSelected').style.display = 'none';
+    panel.querySelector('#mobileToggle').style.display = 'none';
+    const input = panel.querySelector('#locationInput');
+    input.value = '';
+    setTimeout(() => input.focus(), 50);
+}
+
+function showLocationSelected(loc) {
+    const panel = CalendarState.eventPanel;
+    panel.querySelector('#locationAutocomplete').style.display = 'none';
+    panel.querySelector('#locationSuggestions').classList.remove('open');
+    const selected = panel.querySelector('#locationSelected');
+    selected.style.display = 'flex';
+    selected.querySelector('#locationSelectedDot').style.background = loc.color;
+    const labelEl = selected.querySelector('#locationSelectedLabel');
+    const mobileIcon = loc.mobile ? ' <span class="mobile-badge">⚓</span>' : '';
+    labelEl.innerHTML = loc.label + mobileIcon;
+}
+
+function showMobileToggle(loc) {
+    const panel = CalendarState.eventPanel;
+    const toggle = panel.querySelector('#mobileToggle');
+    toggle.style.display = '';
+    const checkbox = toggle.querySelector('#mobileCheck');
+    checkbox.checked = !!loc.mobile;
+    checkbox.onchange = () => {
+        loc.mobile = checkbox.checked;
+        if (!checkbox.checked) delete loc.mobile;
+        showLocationSelected(loc);
+    };
 }
 
 function closeAllTimePickers() {
     CalendarState.eventPanel.querySelectorAll('.time-picker.open').forEach(p => p.classList.remove('open'));
 }
 
-function toggleLocationPicker() {
-    closeAllTimePickers();
-    const picker = CalendarState.eventPanel.querySelector('#locationPicker');
-    picker.classList.toggle('open');
-}
-
 function selectLocation(loc) {
     pendingEvent.location = loc.name;
 
-    const valueEl = CalendarState.eventPanel.querySelector('#eventLocationValue');
-    valueEl.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span>${loc.label}`;
-    valueEl.classList.remove('event-field-empty');
+    showLocationSelected(loc);
+    showMobileToggle(loc);
 
-    // Update title to location name (default behavior)
+    // Update title to location name
     CalendarState.eventPanel.querySelector('#eventTripName').textContent = loc.label;
 
-    // Close picker and enable save
-    CalendarState.eventPanel.querySelector('#locationPicker').classList.remove('open');
+    // Enable save
     CalendarState.eventPanel.querySelector('#eventSaveBtn').disabled = false;
 
     // Show accommodation section
@@ -2010,11 +2090,8 @@ function openEventPanel(date, arriveOverride) {
     updateArriveDisplay();
     updateDepartDisplay();
 
-    // Reset location
-    const locValue = eventPanel.querySelector('#eventLocationValue');
-    locValue.textContent = 'Tap to set destination';
-    locValue.classList.add('event-field-empty');
-    eventPanel.querySelector('#locationPicker').classList.remove('open');
+    // Reset location — show input mode
+    showLocationInput();
 
     // Reset title
     eventPanel.querySelector('#eventTripName').textContent = 'New Trip';
@@ -2046,9 +2123,6 @@ function openEventPanel(date, arriveOverride) {
     deleteBtn.classList.remove('confirming');
     deleteBtn.textContent = 'Delete Trip';
 
-    // Build location options
-    buildLocationPicker();
-
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');
 }
@@ -2076,20 +2150,18 @@ function openEventPanelForEdit(evt) {
 
     // Set location
     const loc = CalendarState.locationMap[evt.location];
-    const locValue = eventPanel.querySelector('#eventLocationValue');
+    if (loc) {
+        showLocationSelected(loc);
+        showMobileToggle(loc);
+    } else {
+        showLocationInput();
+    }
+
+    // Set title
     let displayName = loc ? loc.label : evt.location;
     if (evt.stay && evt.stay.name) {
         displayName += ` \u00B7 ${evt.stay.name}`;
     }
-    if (loc) {
-        locValue.innerHTML = `<span class="location-dot" style="background:${loc.color}"></span>${displayName}`;
-    } else {
-        locValue.textContent = displayName;
-    }
-    locValue.classList.remove('event-field-empty');
-    eventPanel.querySelector('#locationPicker').classList.remove('open');
-
-    // Set title
     eventPanel.querySelector('#eventTripName').textContent = displayName;
 
     // Transportation
@@ -2112,9 +2184,6 @@ function openEventPanelForEdit(evt) {
     deleteBtn.style.display = '';
     deleteBtn.classList.remove('confirming');
     deleteBtn.textContent = 'Delete Trip';
-
-    // Build location picker for potential location change
-    buildLocationPicker();
 
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');
@@ -2569,12 +2638,13 @@ const chatTools = [
     },
     {
         name: 'create_location',
-        description: 'Create a new city/location. Returns the created location with auto-assigned color. Note: create_event auto-creates locations too, so this is only needed if you want to set a custom color.',
+        description: 'Create a new city/location. Returns the created location with auto-assigned color. Note: create_event auto-creates locations too, so this is only needed if you want to set a custom color or mark it as mobile.',
         input_schema: {
             type: 'object',
             properties: {
-                label: { type: 'string', description: 'Display name (e.g. "Barcelona", "New York")' },
-                color: { type: 'string', description: 'Optional hex color (e.g. "#E87D5A"). Auto-assigned if omitted.' }
+                label: { type: 'string', description: 'Display name (e.g. "Barcelona", "New York", "Yacht (Galaxy)")' },
+                color: { type: 'string', description: 'Optional hex color (e.g. "#E87D5A"). Auto-assigned if omitted.' },
+                mobile: { type: 'boolean', description: 'Set true for mobile locations like yachts, RVs, motorhomes — these are accommodation+transport combos.' }
             },
             required: ['label']
         }
@@ -2723,6 +2793,7 @@ async function executeToolCall(name, input) {
             }
             const color = input.color || getNextPaletteColor(DataProvider._data.locations);
             const newLoc = { name, label: input.label, color };
+            if (input.mobile) newLoc.mobile = true;
             DataProvider._data.locations.push(newLoc);
             CalendarState.locations = DataProvider._data.locations;
             CalendarState.locationMap[name] = newLoc;

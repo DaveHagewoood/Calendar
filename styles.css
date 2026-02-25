@@ -844,16 +844,126 @@ body {
 }
 
 /* Location picker */
+.location-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    display: inline-block;
+}
+
+/* Location autocomplete input */
+.location-input {
+    width: 100%;
+    padding: 8px 10px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 14px;
+    outline: none;
+    box-sizing: border-box;
+}
+.location-input:focus {
+    border-color: #3b82f6;
+}
+.location-input::placeholder {
+    color: #666;
+}
+
+/* Autocomplete suggestions dropdown */
+.location-suggestions {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.2s ease;
+    background: #1e1e1e;
+    border-radius: 0 0 8px 8px;
+    margin-top: -1px;
+}
+.location-suggestions.open {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid #444;
+    border-top: none;
+}
+
+/* Individual suggestion row */
+.location-suggestion {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px;
+    font-size: 14px;
+    color: #ccc;
+    cursor: pointer;
+    border-bottom: 1px solid #2a2a2a;
+}
+.location-suggestion:last-child {
+    border-bottom: none;
+}
+.location-suggestion:active {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.08);
+}
+.location-suggestion-create {
+    color: #aaa;
+    font-style: italic;
+}
+.location-suggestion strong {
+    color: #fff;
+    font-weight: 600;
+}
+
+/* Selected location display */
+.location-selected {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: #fff;
+}
+.location-change-btn {
+    margin-left: auto;
+    font-size: 12px;
+    color: #3b82f6;
+    cursor: pointer;
+    background: none;
+    border: none;
+    padding: 4px 8px;
+}
+
+/* Mobile location badge */
+.mobile-badge {
+    font-size: 12px;
+    margin-left: 2px;
+    opacity: 0.8;
+}
+
+/* Mobile toggle below location field */
+.mobile-toggle {
+    margin-top: 6px;
+    font-size: 12px;
+    color: #aaa;
+}
+.mobile-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.mobile-toggle input[type="checkbox"] {
+    accent-color: #3b82f6;
+}
+
+/* Generic picker (reused by stay type picker) */
 .location-picker {
     max-height: 0;
     overflow: hidden;
     transition: max-height 0.25s ease;
 }
-
 .location-picker.open {
     max-height: 300px;
 }
-
 .location-option {
     display: flex;
     align-items: center;
@@ -864,32 +974,12 @@ body {
     cursor: pointer;
     border-bottom: 1px solid #2a2a2a;
 }
-
 .location-option:last-child {
     border-bottom: none;
 }
-
-.location-option:hover {
+.location-option:active {
     color: #fff;
     background: rgba(255, 255, 255, 0.05);
-}
-
-.location-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    display: inline-block;
-}
-
-#eventLocationField {
-    cursor: pointer;
-}
-
-#eventLocationValue {
-    display: flex;
-    align-items: center;
-    gap: 8px;
 }
 
 /* Save button */
