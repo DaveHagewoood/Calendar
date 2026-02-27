@@ -146,9 +146,15 @@ const ValidationEngine = {
                 const eventStart = Math.min(travelStart, arriveMs);
                 const eventEnd = departMs;
 
+                const allUserIds = CalendarState.users.map(u => u.id);
+                const eventUsers = event.users && event.users.length ? event.users : allUserIds;
+
                 for (const other of existingEvents) {
                     // Skip self when editing
                     if (mode === 'edit' && other.id === event._editingId) continue;
+                    // Skip if no shared users
+                    const otherUsers = other.users && other.users.length ? other.users : allUserIds;
+                    if (!eventUsers.some(u => otherUsers.includes(u))) continue;
                     const otherArrive = parseTimestamp(other.arrive);
                     const otherDepart = other.depart ? parseTimestamp(other.depart) : null;
                     // Compute other's effective end (depart or EOD)
@@ -255,6 +261,10 @@ const CalendarState = {
     locations: [],
     locationMap: {},
 
+    // Users
+    users: [],                  // user definitions from data
+    activeUsers: new Set(),     // currently selected users for filtering
+
     // Interaction state
     wasDrag: false,
 
@@ -279,6 +289,14 @@ const DataProvider = {
         const json = await res.json();
         this._data = json.record;
         this._derived = null;
+
+        // Seed default users if missing
+        if (!this._data.users || !this._data.users.length) {
+            this._data.users = [
+                { id: 'dave', label: 'Dave', color: '#3b82f6' },
+                { id: 'danielle', label: 'Danielle', color: '#ec4899' }
+            ];
+        }
     },
 
     _saving: false,
@@ -374,7 +392,11 @@ const DataProvider = {
                     const travelDuration = e.travel.legs.reduce((s, l) => s + l.duration, 0) * 60 * 1000;
                     thisStart = e.arrive - travelDuration;
                 }
-                if (thisStart < prevEnd) {
+                // Only warn if events share users
+                const allIds = (CalendarState.users || []).map(u => u.id);
+                const eUsers = e.users && e.users.length ? e.users : allIds;
+                const pUsers = prev.users && prev.users.length ? prev.users : allIds;
+                if (thisStart < prevEnd && eUsers.some(u => pUsers.includes(u))) {
                     console.warn(`Event ${e.id}: overlaps with ${prev.id}`);
                 }
             }
@@ -614,9 +636,33 @@ function computeEventCompleteness(rawEvent) {
     return { complete: missing.length === 0, missing };
 }
 
+function isEventVisible(eventId) {
+    if (!eventId) return true;
+    const evt = DataProvider._data.events.find(e => e.id === eventId);
+    if (!evt) return true;
+    const eventUsers = evt.users && evt.users.length ? evt.users : CalendarState.users.map(u => u.id);
+    return eventUsers.some(u => CalendarState.activeUsers.has(u));
+}
+
+function toggleUserFilter(userId) {
+    const { activeUsers } = CalendarState;
+    if (activeUsers.has(userId)) {
+        if (activeUsers.size <= 1) return; // can't deactivate last user
+        activeUsers.delete(userId);
+    } else {
+        activeUsers.add(userId);
+    }
+    // Update chip visuals
+    document.querySelectorAll('#topBarUsers .user-chip').forEach(btn => {
+        btn.classList.toggle('active', activeUsers.has(btn.dataset.userId));
+    });
+    refreshCalendar();
+}
+
 function renderStays(container, stays, clipStart, clipEnd) {
     stays.forEach(stay => {
         if (stay.end <= clipStart || stay.start >= clipEnd) return;
+        if (!isEventVisible(stay.eventId)) return;
         const loc = CalendarState.locationMap[stay.location];
         const fillColor = loc ? loc.color : '#3a3a3a';
         const classes = [];
@@ -649,6 +695,7 @@ function renderStays(container, stays, clipStart, clipEnd) {
 function renderTravel(container, travel, clipStart, clipEnd) {
     travel.forEach(t => {
         if (t.end <= clipStart || t.start >= clipEnd) return;
+        if (!isEventVisible(t.eventId)) return;
         renderSegment(container, t.start, t.end,
             'continuous-fill', ['travel-segment'], clipStart, clipEnd);
     });
@@ -699,6 +746,7 @@ function renderLabels(container, stays, clipStart, clipEnd) {
 
     stays.forEach(stay => {
         if (stay.end <= clipStart || stay.start >= clipEnd) return;
+        if (!isEventVisible(stay.eventId)) return;
         const loc = locationMap[stay.location];
         if (!loc) return;
 
@@ -1386,6 +1434,10 @@ function createEventPanel() {
                 <input type="date" id="eventDepartDateInput" class="hidden-input">
                 <div class="time-picker" id="departTimePicker"></div>
             </div>
+            <div class="event-field" id="eventUsersField">
+                <div class="event-field-label">Travelers</div>
+                <div class="user-chips" id="eventUserChips"></div>
+            </div>
         </div>
         <div class="event-panel-footer">
             <button class="event-delete-btn" id="eventDeleteBtn" style="display:none">Delete Trip</button>
@@ -1807,6 +1859,33 @@ function selectLocation(loc) {
     showStaySection();
 }
 
+function buildUserChips() {
+    const container = CalendarState.eventPanel.querySelector('#eventUserChips');
+    container.innerHTML = '';
+    CalendarState.users.forEach(u => {
+        const chip = document.createElement('button');
+        chip.className = 'user-chip-panel';
+        chip.dataset.userId = u.id;
+        chip.style.setProperty('--user-color', u.color);
+        chip.textContent = u.label;
+        if (pendingEvent.users.includes(u.id)) chip.classList.add('active');
+        chip.addEventListener('click', () => {
+            const active = pendingEvent.users;
+            if (active.includes(u.id)) {
+                if (active.length <= 1) return; // keep at least one
+                pendingEvent.users = active.filter(id => id !== u.id);
+            } else {
+                pendingEvent.users = [...active, u.id];
+            }
+            // Refresh chip visuals
+            container.querySelectorAll('.user-chip-panel').forEach(c => {
+                c.classList.toggle('active', pendingEvent.users.includes(c.dataset.userId));
+            });
+        });
+        container.appendChild(chip);
+    });
+}
+
 function showStaySection() {
     const panel = CalendarState.eventPanel;
     const stayField = panel.querySelector('#eventStayField');
@@ -2084,6 +2163,7 @@ function openEventPanel(date, arriveOverride) {
         estimated: ['arrive', 'depart'],
         travel: null,
         stay: null,
+        users: CalendarState.users.map(u => u.id),
     };
 
     // Update displays
@@ -2123,6 +2203,9 @@ function openEventPanel(date, arriveOverride) {
     deleteBtn.classList.remove('confirming');
     deleteBtn.textContent = 'Delete Trip';
 
+    // Build user chips (both selected by default)
+    buildUserChips();
+
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');
 }
@@ -2141,6 +2224,7 @@ function openEventPanelForEdit(evt) {
         estimated: evt.estimated ? [...evt.estimated] : [],
         travel: evt.travel ? { legs: evt.travel.legs.map(l => ({ ...l })) } : null,
         stay: evt.stay ? { ...evt.stay } : null,
+        users: evt.users && evt.users.length ? [...evt.users] : CalendarState.users.map(u => u.id),
         _editingId: evt.id,
     };
 
@@ -2185,6 +2269,9 @@ function openEventPanelForEdit(evt) {
     deleteBtn.classList.remove('confirming');
     deleteBtn.textContent = 'Delete Trip';
 
+    // Build user chips from event data
+    buildUserChips();
+
     eventBackdrop.classList.add('open');
     eventPanel.classList.add('open');
 }
@@ -2200,6 +2287,7 @@ function buildEventObject(pending) {
         arrive: toISO(pending.arrive),
         depart: pending.depart ? toISO(pending.depart) : null,
         estimated: pending.estimated || [],
+        users: pending.users || CalendarState.users.map(u => u.id),
     };
     if (pending.travel && pending.travel.legs.length > 0) {
         obj.travel = pending.travel;
@@ -2461,6 +2549,7 @@ function buildScheduleTimeline() {
         }
         line += `\n    occupied range: ${fmt(new Date(rangeStart).toISOString())} → ${fmt(new Date(rangeEnd).toISOString())}`;
         if (e.estimated && e.estimated.length > 0) line += `\n    estimated: [${e.estimated.join(', ')}]`;
+        if (e.users && e.users.length) line += `\n    travelers: [${e.users.join(', ')}]`;
         return line;
     });
 
@@ -2516,6 +2605,13 @@ ${Object.entries(STAY_TYPES).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).
 
 Events can optionally include accommodation details: stay_type, stay_name (hotel/property name), and stay_address. These are optional — the minimum required is just a city.
 
+## Users / Travelers
+This calendar is shared between: ${CalendarState.users.map(u => `**${u.label}** (id: "${u.id}")`).join(', ')}.
+Currently showing: ${[...CalendarState.activeUsers].map(id => CalendarState.users.find(u => u.id === id)?.label || id).join(', ')}. ${CalendarState.activeUsers.size < CalendarState.users.length ? 'Some users are filtered out — default new trips to the currently active user(s) unless the user specifies otherwise.' : 'All users active — default new trips to everyone.'}
+Events have a \`users\` array indicating who is traveling. If omitted, the trip applies to everyone.
+When the user says "I" or mentions themselves, they are Dave. When they mention their partner, that's Danielle.
+Use the \`users\` parameter on create_event/edit_event to assign trips to specific people. If the user explicitly asks to create/edit a trip for someone not currently toggled, do it anyway — the filter is just a view preference, not a restriction.
+
 ## Available Transport Modes
 ${Object.entries(transportModes).map(([k, v]) => `- "${k}" (${v.label} ${v.icon})`).join('\n')}
 
@@ -2528,7 +2624,7 @@ ${buildScheduleTimeline()}
 - Dates use ISO format: "YYYY-MM-DDTHH:mm" (e.g. "2025-03-15T14:00")
 - Each event must have a location (existing or new city slug) and arrive datetime
 - Departure must be after arrival
-- Events cannot overlap — check the "occupied range" fields above to avoid conflicts
+- Events cannot overlap for the same user(s) — check the "occupied range" and "travelers" fields above to avoid conflicts. Different users CAN have overlapping trips.
 - The "estimated" array lists fields that are approximate (e.g. ["arrive", "depart"])
 - Travel legs have: mode, duration (minutes, ALWAYS provide this), note (optional)
 - Stay info is optional: stay_type, stay_name, stay_address
@@ -2587,7 +2683,8 @@ const chatTools = [
                 },
                 stay_type: { type: 'string', description: 'Accommodation type: hotel, house, airbnb, yacht, hostel, camping, other' },
                 stay_name: { type: 'string', description: 'Name of the accommodation (e.g. "Hotel Le Marais")' },
-                stay_address: { type: 'string', description: 'Full address of the accommodation' }
+                stay_address: { type: 'string', description: 'Full address of the accommodation' },
+                users: { type: 'array', items: { type: 'string' }, description: 'User IDs for this trip (e.g. ["dave","danielle"]). Defaults to all users if omitted.' }
             },
             required: ['location', 'arrive']
         }
@@ -2622,7 +2719,8 @@ const chatTools = [
                 },
                 stay_type: { type: 'string', description: 'Accommodation type: hotel, house, airbnb, yacht, hostel, camping, other' },
                 stay_name: { type: 'string', description: 'Name of the accommodation' },
-                stay_address: { type: 'string', description: 'Full address of the accommodation' }
+                stay_address: { type: 'string', description: 'Full address of the accommodation' },
+                users: { type: 'array', items: { type: 'string' }, description: 'User IDs for this trip (e.g. ["dave","danielle"])' }
             },
             required: ['event_id']
         }
@@ -2677,6 +2775,7 @@ async function executeToolCall(name, input) {
                 depart: depart ? depart.getTime() : null,
                 travel: input.travel_legs ? { legs: input.travel_legs.map(l => ({ mode: l.mode, duration: l.duration || 0, note: l.note || '' })) } : null,
                 estimated: input.estimated || [],
+                users: input.users || null,
             };
 
             // Validate
@@ -2706,6 +2805,7 @@ async function executeToolCall(name, input) {
                 if (input.stay_name) newEvent.stay.name = input.stay_name;
                 if (input.stay_address) newEvent.stay.address = input.stay_address;
             }
+            if (input.users) newEvent.users = input.users;
             DataProvider._data.events.push(newEvent);
             refreshCalendar();
             ToastManager.show('Trip created by assistant', 'success', 2000);
@@ -2744,6 +2844,7 @@ async function executeToolCall(name, input) {
                 if (input.stay_name !== undefined) existing.stay.name = input.stay_name;
                 if (input.stay_address !== undefined) existing.stay.address = input.stay_address;
             }
+            if (input.users !== undefined) existing.users = input.users;
 
             // Validate
             const arrive = new Date(existing.arrive);
@@ -2753,6 +2854,7 @@ async function executeToolCall(name, input) {
                 depart: depart ? depart.getTime() : null,
                 travel: existing.travel || null,
                 estimated: existing.estimated || [],
+                users: existing.users || null,
                 _editingId: input.event_id,
             };
             const validation = ValidationEngine.validate(checkEvent, DataProvider._data.events, 'edit');
@@ -3077,6 +3179,22 @@ async function initCalendar() {
     CalendarState.locationMap = Object.fromEntries(locations.map(l => [l.name, l]));
     CalendarState.canvas = document.getElementById('calendarCanvas');
     CalendarState.viewport = document.getElementById('calendarViewport');
+
+    // Users
+    CalendarState.users = DataProvider._data.users;
+    CalendarState.activeUsers = new Set(CalendarState.users.map(u => u.id));
+
+    // Build user filter chips in top bar
+    const usersBar = document.getElementById('topBarUsers');
+    CalendarState.users.forEach(u => {
+        const btn = document.createElement('button');
+        btn.className = 'user-chip active';
+        btn.dataset.userId = u.id;
+        btn.style.setProperty('--user-color', u.color);
+        btn.textContent = u.label;
+        btn.addEventListener('click', () => toggleUserFilter(u.id));
+        usersBar.appendChild(btn);
+    });
 
     // Create panels and UI systems
     createTripPanel();
