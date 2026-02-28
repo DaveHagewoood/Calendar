@@ -270,6 +270,11 @@ body {
     padding-left: 2px;
 }
 
+.location-label-half {
+    font-size: 8px;
+    padding: 1px 4px;
+}
+
 /* ============================================================
    Trip Detail Panel
    ============================================================ */
@@ -1538,6 +1543,32 @@ body {
     pointer-events: none;
     z-index: 1;
     margin-top: 6px;
+}
+/* Stacked column for split-row (two users) */
+.day-zoom-stack {
+    display: flex;
+    flex-direction: column;
+    min-width: 40px;
+    overflow: hidden;
+}
+.day-zoom-slot-top {
+    flex: 1;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+.day-zoom-slot-bottom {
+    flex: 1;
+}
+.day-zoom-segment.is-empty {
+    background: #2a2a2a;
+    flex: 1;
+}
+.day-zoom-label-half {
+    font-size: 8px;
+    line-height: 1.1;
+}
+.day-zoom-time-half {
+    font-size: 7px;
+    margin-top: 1px;
 }
 .day-zoom-close {
     margin: 8px 12px;

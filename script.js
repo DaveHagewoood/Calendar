@@ -569,6 +569,9 @@ function renderDayCells(container, startDayIndex, numDays) {
         cell.addEventListener('click', () => {
             if (CalendarState.wasDrag) return;
             const segments = getSegmentsForDay(date);
+            // Filter by active users
+            segments.stays = segments.stays.filter(s => isEventVisible(s.eventId));
+            segments.travel = segments.travel.filter(t => isEventVisible(t.eventId));
             const totalItems = segments.stays.length + segments.travel.length + segments.gaps.length;
 
             if (totalItems === 0) {
@@ -592,7 +595,7 @@ function renderDayCells(container, startDayIndex, numDays) {
 }
 
 // Render a continuous segment (stay/trip/undefined) across rows, clipped to a time range
-function renderSegment(container, start, end, className, additionalClasses, clipStart, clipEnd) {
+function renderSegment(container, start, end, className, additionalClasses, clipStart, clipEnd, slot = 'full') {
     const clippedStart = Math.max(start, clipStart);
     const clippedEnd = Math.min(end, clipEnd);
     if (clippedStart >= clippedEnd) return [];
@@ -610,11 +613,18 @@ function renderSegment(container, start, end, className, additionalClasses, clip
 
         const left = colToX(startCol);
         const width = (endCol - startCol) * CELL_SIZE;
-        const top = rowToY(row);
+        let segTop = rowToY(row);
+        let segHeight = CELL_SIZE;
+        if (slot === 'top') {
+            segHeight = CELL_SIZE / 2;
+        } else if (slot === 'bottom') {
+            segTop += CELL_SIZE / 2;
+            segHeight = CELL_SIZE / 2;
+        }
 
         const seg = createPositionedDiv(
             [className, ...additionalClasses].join(' '),
-            left, top, width, CELL_SIZE
+            left, segTop, width, segHeight
         );
         segments.push(seg);
         container.appendChild(seg);
@@ -634,6 +644,16 @@ function computeEventCompleteness(rawEvent) {
         });
     }
     return { complete: missing.length === 0, missing };
+}
+
+function getUserSlot(eventId) {
+    if (CalendarState.activeUsers.size <= 1) return 'full';
+    if (!eventId) return 'full';
+    const evt = DataProvider._data.events.find(e => e.id === eventId);
+    if (!evt) return 'full';
+    const users = evt.users && evt.users.length ? evt.users : CalendarState.users.map(u => u.id);
+    if (users.length > 1) return 'full';
+    return users[0] === CalendarState.users[0].id ? 'top' : 'bottom';
 }
 
 function isEventVisible(eventId) {
@@ -669,8 +689,9 @@ function renderStays(container, stays, clipStart, clipEnd) {
         if (stay.estimated && stay.estimated.length > 0) {
             classes.push('estimated-segment');
         }
+        const slot = getUserSlot(stay.eventId);
         const segs = renderSegment(container, stay.start, stay.end,
-            'continuous-fill', classes, clipStart, clipEnd);
+            'continuous-fill', classes, clipStart, clipEnd, slot);
         segs.forEach(seg => seg.style.setProperty('--fill-color', fillColor));
 
         // Completeness badge at the start of the stay (if visible in this chunk)
@@ -680,9 +701,10 @@ function renderStays(container, stays, clipStart, clipEnd) {
                 const { complete } = computeEventCompleteness(rawEvent);
                 if (!complete) {
                     const pos = getGridPosition(stay.start);
+                    const badgeY = rowToY(pos.row) + 2 + (slot === 'bottom' ? CELL_SIZE / 2 : 0);
                     const badge = createPositionedDiv('completeness-badge',
                         colToX(pos.col + pos.dayFraction) - 3,
-                        rowToY(pos.row) + 2,
+                        badgeY,
                         8, 8);
                     container.appendChild(badge);
                 }
@@ -696,8 +718,9 @@ function renderTravel(container, travel, clipStart, clipEnd) {
     travel.forEach(t => {
         if (t.end <= clipStart || t.start >= clipEnd) return;
         if (!isEventVisible(t.eventId)) return;
+        const slot = getUserSlot(t.eventId);
         renderSegment(container, t.start, t.end,
-            'continuous-fill', ['travel-segment'], clipStart, clipEnd);
+            'continuous-fill', ['travel-segment'], clipStart, clipEnd, slot);
     });
 }
 
@@ -750,6 +773,7 @@ function renderLabels(container, stays, clipStart, clipEnd) {
         const loc = locationMap[stay.location];
         if (!loc) return;
 
+        const slot = getUserSlot(stay.eventId);
         const clippedStart = Math.max(stay.start, clipStart);
         const clippedEnd = Math.min(stay.end, clipEnd);
         const startPos = getGridPosition(clippedStart);
@@ -765,9 +789,19 @@ function renderLabels(container, stays, clipStart, clipEnd) {
 
             const isNarrow = colSpan < minColsForCentered;
 
+            let labelTop = rowToY(row);
+            let labelHeight = CELL_SIZE;
+            if (slot === 'top') {
+                labelHeight = CELL_SIZE / 2;
+            } else if (slot === 'bottom') {
+                labelTop += CELL_SIZE / 2;
+                labelHeight = CELL_SIZE / 2;
+            }
+
             const label = createPositionedDiv(
-                'location-label' + (isNarrow ? ' location-label-narrow' : ''),
-                colToX(startCol), rowToY(row), colSpan * CELL_SIZE, CELL_SIZE
+                'location-label' + (isNarrow ? ' location-label-narrow' : '')
+                    + (slot !== 'full' ? ' location-label-half' : ''),
+                colToX(startCol), labelTop, colSpan * CELL_SIZE, labelHeight
             );
             // Show "⚓ City · Accommodation" for mobile, "City · Accommodation" otherwise
             let labelText = loc.mobile ? '⚓ ' + loc.label : loc.label;
@@ -1234,6 +1268,101 @@ function createDayZoomView() {
     CalendarState.dayZoomBackdrop = backdrop;
 }
 
+function buildZoomSegmentEl(item, isHalf) {
+    const bar = document.createElement('div');
+    bar.className = 'day-zoom-segment';
+
+    if (item.type === 'stay') {
+        bar.classList.add('is-stay');
+        if (item.estimated) bar.classList.add('is-estimated');
+        bar.style.setProperty('--fill-color', item.color);
+    } else if (item.type === 'travel') {
+        bar.classList.add('is-travel');
+    } else {
+        bar.classList.add('is-gap');
+    }
+
+    const labelEl = document.createElement('div');
+    labelEl.className = 'day-zoom-label';
+    if (isHalf) {
+        // Prepend user name for half-height segments
+        const evt = item.eventId ? DataProvider._data.events.find(e => e.id === item.eventId) : null;
+        const users = evt && evt.users && evt.users.length ? evt.users : CalendarState.users.map(u => u.id);
+        const userName = CalendarState.users.find(u => u.id === users[0])?.label;
+        labelEl.textContent = userName ? `${userName}: ${item.label}` : item.label;
+        labelEl.classList.add('day-zoom-label-half');
+    } else {
+        labelEl.textContent = item.label;
+    }
+    bar.appendChild(labelEl);
+
+    const timeEl = document.createElement('div');
+    timeEl.className = 'day-zoom-time';
+    timeEl.textContent = item.time;
+    if (isHalf) timeEl.classList.add('day-zoom-time-half');
+    bar.appendChild(timeEl);
+
+    if (!isHalf) {
+        const icon = document.createElement('div');
+        icon.className = 'day-zoom-edit-icon';
+        icon.textContent = item.type === 'gap' ? '+' : '\u270E';
+        bar.appendChild(icon);
+    }
+
+    bar.addEventListener('click', (e) => { e.stopPropagation(); item.action(); });
+    return bar;
+}
+
+function buildSplitColumns(items) {
+    const columns = [];
+    const used = new Set();
+
+    // Full-height items become their own columns
+    items.forEach((item, i) => {
+        if (item.slot === 'full') {
+            columns.push({ items: [item], start: item.start, duration: item.duration });
+            used.add(i);
+        }
+    });
+
+    // Pair up top/bottom items that overlap in time
+    items.forEach((item, i) => {
+        if (used.has(i)) return;
+        const oppositeSlot = item.slot === 'top' ? 'bottom' : 'top';
+        let partnerIdx = -1;
+
+        for (let j = 0; j < items.length; j++) {
+            if (j === i || used.has(j)) continue;
+            if (items[j].slot !== oppositeSlot) continue;
+            const itemEnd = item.start + item.duration;
+            const otherEnd = items[j].start + items[j].duration;
+            if (item.start < otherEnd && items[j].start < itemEnd) {
+                partnerIdx = j;
+                break;
+            }
+        }
+
+        if (partnerIdx >= 0) {
+            const partner = items[partnerIdx];
+            used.add(i);
+            used.add(partnerIdx);
+            const combinedStart = Math.min(item.start, partner.start);
+            const combinedEnd = Math.max(item.start + item.duration, partner.start + partner.duration);
+            columns.push({
+                items: item.slot === 'top' ? [item, partner] : [partner, item],
+                start: combinedStart,
+                duration: combinedEnd - combinedStart
+            });
+        } else {
+            used.add(i);
+            columns.push({ items: [item], start: item.start, duration: item.duration });
+        }
+    });
+
+    columns.sort((a, b) => a.start - b.start);
+    return columns;
+}
+
 function showDayZoomView(date, segments) {
     const { dayZoom, dayZoomBackdrop } = CalendarState;
     const titleEl = dayZoom.querySelector('#dayZoomTitle');
@@ -1249,10 +1378,13 @@ function showDayZoomView(date, segments) {
         return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true });
     };
 
-    // Collect all items and sort by start time
+    const splitMode = CalendarState.activeUsers.size > 1;
+
+    // Collect all items with slot info
     const items = [];
 
     segments.stays.forEach(s => {
+        if (!isEventVisible(s.eventId)) return;
         const loc = CalendarState.locationMap[s.location];
         const label = loc ? loc.label : s.location;
         const color = loc ? loc.color : '#666';
@@ -1261,10 +1393,9 @@ function showDayZoomView(date, segments) {
         if (evt && evt.stay && evt.stay.name) name += ` \u00b7 ${evt.stay.name}`;
         const estimated = s.estimated && s.estimated.length > 0;
         items.push({
-            start: s.clipStart,
-            duration: s.clipEnd - s.clipStart,
-            type: 'stay',
-            color, estimated,
+            start: s.clipStart, duration: s.clipEnd - s.clipStart,
+            type: 'stay', color, estimated, eventId: s.eventId,
+            slot: splitMode ? getUserSlot(s.eventId) : 'full',
             label: name,
             time: `${fmtTime(s.clipStart)} – ${fmtTime(s.clipEnd)}`,
             action: () => { closeDayZoomView(); if (evt) openEventPanelForEdit(evt); }
@@ -1272,12 +1403,13 @@ function showDayZoomView(date, segments) {
     });
 
     segments.travel.forEach(t => {
+        if (!isEventVisible(t.eventId)) return;
         const loc = CalendarState.locationMap[t.location];
         const label = loc ? loc.label : t.location;
         items.push({
-            start: t.clipStart,
-            duration: t.clipEnd - t.clipStart,
-            type: 'travel',
+            start: t.clipStart, duration: t.clipEnd - t.clipStart,
+            type: 'travel', eventId: t.eventId,
+            slot: splitMode ? getUserSlot(t.eventId) : 'full',
             label: `\u2192 ${label}`,
             time: `${fmtTime(t.clipStart)} – ${fmtTime(t.clipEnd)}`,
             action: () => { closeDayZoomView(); openTravelPanel(t); }
@@ -1286,9 +1418,8 @@ function showDayZoomView(date, segments) {
 
     segments.gaps.forEach(g => {
         items.push({
-            start: g.start,
-            duration: g.end - g.start,
-            type: 'gap',
+            start: g.start, duration: g.end - g.start,
+            type: 'gap', eventId: null, slot: 'full',
             label: '',
             time: `${fmtTime(g.start)} – ${fmtTime(g.end)}`,
             action: () => { closeDayZoomView(); openEventPanel(date, new Date(g.start)); }
@@ -1297,45 +1428,51 @@ function showDayZoomView(date, segments) {
 
     items.sort((a, b) => a.start - b.start);
 
-    // Calculate proportional heights
-    const totalDuration = items.reduce((sum, it) => sum + it.duration, 0);
+    // Build columns (split mode pairs top/bottom items)
+    const columns = splitMode ? buildSplitColumns(items)
+        : items.map(item => ({ items: [item], start: item.start, duration: item.duration }));
 
-    items.forEach(item => {
-        const pct = totalDuration > 0 ? (item.duration / totalDuration) * 100 : 100 / items.length;
-        const bar = document.createElement('div');
-        bar.className = 'day-zoom-segment';
-        bar.style.flex = `${pct} 0 0`;
+    const totalDuration = columns.reduce((sum, col) => sum + col.duration, 0);
 
-        if (item.type === 'stay') {
-            bar.classList.add('is-stay');
-            if (item.estimated) bar.classList.add('is-estimated');
-            bar.style.setProperty('--fill-color', item.color);
-        } else if (item.type === 'travel') {
-            bar.classList.add('is-travel');
+    columns.forEach(col => {
+        const pct = totalDuration > 0 ? (col.duration / totalDuration) * 100 : 100 / columns.length;
+
+        if (col.items.length === 1 && col.items[0].slot === 'full') {
+            // Full-height segment
+            const bar = buildZoomSegmentEl(col.items[0], false);
+            bar.style.flex = `${pct} 0 0`;
+            segmentsEl.appendChild(bar);
         } else {
-            bar.classList.add('is-gap');
+            // Stacked column with top/bottom halves
+            const stack = document.createElement('div');
+            stack.className = 'day-zoom-stack';
+            stack.style.flex = `${pct} 0 0`;
+
+            const topItem = col.items.find(i => i.slot === 'top');
+            const bottomItem = col.items.find(i => i.slot === 'bottom');
+
+            if (topItem) {
+                const bar = buildZoomSegmentEl(topItem, true);
+                bar.classList.add('day-zoom-slot-top');
+                stack.appendChild(bar);
+            } else {
+                const empty = document.createElement('div');
+                empty.className = 'day-zoom-segment day-zoom-slot-top is-empty';
+                stack.appendChild(empty);
+            }
+
+            if (bottomItem) {
+                const bar = buildZoomSegmentEl(bottomItem, true);
+                bar.classList.add('day-zoom-slot-bottom');
+                stack.appendChild(bar);
+            } else {
+                const empty = document.createElement('div');
+                empty.className = 'day-zoom-segment day-zoom-slot-bottom is-empty';
+                stack.appendChild(empty);
+            }
+
+            segmentsEl.appendChild(stack);
         }
-
-        // Overlay label (like calendar location-label)
-        const labelEl = document.createElement('div');
-        labelEl.className = 'day-zoom-label';
-        labelEl.textContent = item.label;
-        bar.appendChild(labelEl);
-
-        // Time range
-        const timeEl = document.createElement('div');
-        timeEl.className = 'day-zoom-time';
-        timeEl.textContent = item.time;
-        bar.appendChild(timeEl);
-
-        // Edit icon (centered)
-        const icon = document.createElement('div');
-        icon.className = 'day-zoom-edit-icon';
-        icon.textContent = item.type === 'gap' ? '+' : '\u270E';
-        bar.appendChild(icon);
-
-        bar.addEventListener('click', item.action);
-        segmentsEl.appendChild(bar);
     });
 
     dayZoomBackdrop.classList.add('open');
