@@ -1268,7 +1268,7 @@ function createDayZoomView() {
     CalendarState.dayZoomBackdrop = backdrop;
 }
 
-function buildZoomSegmentEl(item, isHalf) {
+function buildZoomSegmentEl(item, isHalf, showLabel = true) {
     const bar = document.createElement('div');
     bar.className = 'day-zoom-segment';
 
@@ -1282,85 +1282,41 @@ function buildZoomSegmentEl(item, isHalf) {
         bar.classList.add('is-gap');
     }
 
-    const labelEl = document.createElement('div');
-    labelEl.className = 'day-zoom-label';
-    if (isHalf) {
-        // Prepend user name for half-height segments
-        const evt = item.eventId ? DataProvider._data.events.find(e => e.id === item.eventId) : null;
-        const users = evt && evt.users && evt.users.length ? evt.users : CalendarState.users.map(u => u.id);
-        const userName = CalendarState.users.find(u => u.id === users[0])?.label;
-        labelEl.textContent = userName ? `${userName}: ${item.label}` : item.label;
-        labelEl.classList.add('day-zoom-label-half');
-    } else {
-        labelEl.textContent = item.label;
-    }
-    bar.appendChild(labelEl);
+    if (showLabel) {
+        const labelEl = document.createElement('div');
+        labelEl.className = 'day-zoom-label';
+        if (isHalf) {
+            // Prepend user name only for solo items (not shared trips/gaps)
+            if (item.slot === 'top' || item.slot === 'bottom') {
+                const evt = item.eventId ? DataProvider._data.events.find(e => e.id === item.eventId) : null;
+                const users = evt && evt.users && evt.users.length ? evt.users : CalendarState.users.map(u => u.id);
+                const userName = CalendarState.users.find(u => u.id === users[0])?.label;
+                labelEl.textContent = userName ? `${userName}: ${item.label}` : item.label;
+            } else {
+                labelEl.textContent = item.label;
+            }
+            labelEl.classList.add('day-zoom-label-half');
+        } else {
+            labelEl.textContent = item.label;
+        }
+        bar.appendChild(labelEl);
 
-    const timeEl = document.createElement('div');
-    timeEl.className = 'day-zoom-time';
-    timeEl.textContent = item.time;
-    if (isHalf) timeEl.classList.add('day-zoom-time-half');
-    bar.appendChild(timeEl);
+        const timeEl = document.createElement('div');
+        timeEl.className = 'day-zoom-time';
+        timeEl.textContent = item.time;
+        if (isHalf) timeEl.classList.add('day-zoom-time-half');
+        bar.appendChild(timeEl);
 
-    if (!isHalf) {
-        const icon = document.createElement('div');
-        icon.className = 'day-zoom-edit-icon';
-        icon.textContent = item.type === 'gap' ? '+' : '\u270E';
-        bar.appendChild(icon);
+        if (!isHalf) {
+            const icon = document.createElement('div');
+            icon.className = 'day-zoom-edit-icon';
+            icon.textContent = item.type === 'gap' ? '+' : '\u270E';
+            bar.appendChild(icon);
+        }
     }
 
     bar.addEventListener('click', (e) => { e.stopPropagation(); item.action(); });
     return bar;
-}
-
-function buildSplitColumns(items) {
-    const columns = [];
-    const used = new Set();
-
-    // Full-height items become their own columns
-    items.forEach((item, i) => {
-        if (item.slot === 'full') {
-            columns.push({ items: [item], start: item.start, duration: item.duration });
-            used.add(i);
-        }
-    });
-
-    // Pair up top/bottom items that overlap in time
-    items.forEach((item, i) => {
-        if (used.has(i)) return;
-        const oppositeSlot = item.slot === 'top' ? 'bottom' : 'top';
-        let partnerIdx = -1;
-
-        for (let j = 0; j < items.length; j++) {
-            if (j === i || used.has(j)) continue;
-            if (items[j].slot !== oppositeSlot) continue;
-            const itemEnd = item.start + item.duration;
-            const otherEnd = items[j].start + items[j].duration;
-            if (item.start < otherEnd && items[j].start < itemEnd) {
-                partnerIdx = j;
-                break;
-            }
-        }
-
-        if (partnerIdx >= 0) {
-            const partner = items[partnerIdx];
-            used.add(i);
-            used.add(partnerIdx);
-            const combinedStart = Math.min(item.start, partner.start);
-            const combinedEnd = Math.max(item.start + item.duration, partner.start + partner.duration);
-            columns.push({
-                items: item.slot === 'top' ? [item, partner] : [partner, item],
-                start: combinedStart,
-                duration: combinedEnd - combinedStart
-            });
-        } else {
-            used.add(i);
-            columns.push({ items: [item], start: item.start, duration: item.duration });
-        }
-    });
-
-    columns.sort((a, b) => a.start - b.start);
-    return columns;
 }
 
 function showDayZoomView(date, segments) {
@@ -1372,6 +1328,7 @@ function showDayZoomView(date, segments) {
         weekday: 'long', month: 'short', day: 'numeric'
     });
     segmentsEl.innerHTML = '';
+    segmentsEl.classList.remove('day-zoom-split-mode');
 
     const fmtTime = (ms) => {
         const d = new Date(ms);
@@ -1428,52 +1385,39 @@ function showDayZoomView(date, segments) {
 
     items.sort((a, b) => a.start - b.start);
 
-    // Build columns (split mode pairs top/bottom items)
-    const columns = splitMode ? buildSplitColumns(items)
-        : items.map(item => ({ items: [item], start: item.start, duration: item.duration }));
+    if (splitMode) {
+        // Two independent rows: each user gets their own proportional timeline
+        const topItems = items.filter(i => i.slot === 'top' || i.slot === 'full');
+        const bottomItems = items.filter(i => i.slot === 'bottom' || i.slot === 'full');
 
-    const totalDuration = columns.reduce((sum, col) => sum + col.duration, 0);
+        segmentsEl.classList.add('day-zoom-split-mode');
 
-    columns.forEach(col => {
-        const pct = totalDuration > 0 ? (col.duration / totalDuration) * 100 : 100 / columns.length;
+        const renderRow = (rowItems, className) => {
+            const row = document.createElement('div');
+            row.className = 'day-zoom-split-row ' + className;
+            const total = rowItems.reduce((sum, i) => sum + i.duration, 0);
+            rowItems.forEach(item => {
+                const pct = total > 0 ? (item.duration / total) * 100 : 100 / rowItems.length;
+                const showLabel = pct > 12;
+                const bar = buildZoomSegmentEl(item, true, showLabel);
+                bar.style.flex = `${pct} 0 0`;
+                row.appendChild(bar);
+            });
+            segmentsEl.appendChild(row);
+        };
 
-        if (col.items.length === 1 && col.items[0].slot === 'full') {
-            // Full-height segment
-            const bar = buildZoomSegmentEl(col.items[0], false);
+        renderRow(topItems, 'day-zoom-slot-top');
+        renderRow(bottomItems, 'day-zoom-slot-bottom');
+    } else {
+        // Normal single-row rendering
+        const totalDuration = items.reduce((sum, it) => sum + it.duration, 0);
+        items.forEach(item => {
+            const pct = totalDuration > 0 ? (item.duration / totalDuration) * 100 : 100 / items.length;
+            const bar = buildZoomSegmentEl(item, false);
             bar.style.flex = `${pct} 0 0`;
             segmentsEl.appendChild(bar);
-        } else {
-            // Stacked column with top/bottom halves
-            const stack = document.createElement('div');
-            stack.className = 'day-zoom-stack';
-            stack.style.flex = `${pct} 0 0`;
-
-            const topItem = col.items.find(i => i.slot === 'top');
-            const bottomItem = col.items.find(i => i.slot === 'bottom');
-
-            if (topItem) {
-                const bar = buildZoomSegmentEl(topItem, true);
-                bar.classList.add('day-zoom-slot-top');
-                stack.appendChild(bar);
-            } else {
-                const empty = document.createElement('div');
-                empty.className = 'day-zoom-segment day-zoom-slot-top is-empty';
-                stack.appendChild(empty);
-            }
-
-            if (bottomItem) {
-                const bar = buildZoomSegmentEl(bottomItem, true);
-                bar.classList.add('day-zoom-slot-bottom');
-                stack.appendChild(bar);
-            } else {
-                const empty = document.createElement('div');
-                empty.className = 'day-zoom-segment day-zoom-slot-bottom is-empty';
-                stack.appendChild(empty);
-            }
-
-            segmentsEl.appendChild(stack);
-        }
-    });
+        });
+    }
 
     dayZoomBackdrop.classList.add('open');
     dayZoom.classList.add('open');

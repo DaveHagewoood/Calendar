@@ -1544,23 +1544,23 @@ body {
     z-index: 1;
     margin-top: 6px;
 }
-/* Stacked column for split-row (two users) */
-.day-zoom-stack {
-    display: flex;
+/* Split-mode: two independent rows for two users */
+.day-zoom-split-mode {
     flex-direction: column;
-    min-width: 40px;
+    height: 140px;
+    flex: none;
+}
+.day-zoom-split-row {
+    display: flex;
+    flex-direction: row;
+    height: 50%;
     overflow: hidden;
 }
+.day-zoom-split-row .day-zoom-segment {
+    min-width: 0;
+}
 .day-zoom-slot-top {
-    flex: 1;
     border-bottom: 1px solid rgba(255, 255, 255, 0.15);
-}
-.day-zoom-slot-bottom {
-    flex: 1;
-}
-.day-zoom-segment.is-empty {
-    background: #2a2a2a;
-    flex: 1;
 }
 .day-zoom-label-half {
     font-size: 8px;
